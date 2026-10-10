@@ -53,15 +53,17 @@ class ContentTests(unittest.TestCase):
         p=Path(__file__).with_name('check-contribution-content.py')
         self.assertEqual(content_findings(p.read_bytes()),[])
     def test_showcase_gif_is_a_bounded_named_exception(self):
-        from public_source_policy import SHOWCASE_GIF_PATH, allowed, content_findings
+        from public_source_policy import SHOWCASE_GIF_PATH, SHOWCASE_GIF_IDENTITY, allowed, content_findings
         data=base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
         self.assertTrue(allowed(SHOWCASE_GIF_PATH))
         self.assertFalse(allowed('docs/brand/arbitrary.gif'))
-        self.assertEqual(self.inspect(SHOWCASE_GIF_PATH,data)['status'],'pass')
-        self.assertEqual(content_findings(data,relative=SHOWCASE_GIF_PATH),[])
-        self.assertEqual(self.inspect('docs/brand/arbitrary.gif',data)['status'],'fail')
-        for invalid in (data[:-1],b'not an image',data[:6]+b'\xff\xff'+data[8:]):
-            self.assertEqual(self.inspect(SHOWCASE_GIF_PATH,invalid)['status'],'fail')
-            self.assertEqual(content_findings(invalid,relative=SHOWCASE_GIF_PATH),['invalid-showcase-gif'])
+        with patch.dict(SHOWCASE_GIF_IDENTITY,{'bytes':len(data),'sha256':hashlib.sha256(data).hexdigest()}):
+            self.assertEqual(self.inspect(SHOWCASE_GIF_PATH,data)['status'],'pass')
+            self.assertEqual(content_findings(data,relative=SHOWCASE_GIF_PATH),[])
+            self.assertEqual(self.inspect('docs/brand/arbitrary.gif',data)['status'],'fail')
+            for invalid in (data[:-1],b'not an image',data[:6]+b'\xff\xff'+data[8:],
+                            b'GIF89a\x01\x00\x01\x00not-a-gif;',data[:-3]+b'xx;'):
+                self.assertEqual(self.inspect(SHOWCASE_GIF_PATH,invalid)['status'],'fail')
+                self.assertEqual(content_findings(invalid,relative=SHOWCASE_GIF_PATH),['invalid-showcase-gif'])
 
 if __name__=='__main__':unittest.main()
