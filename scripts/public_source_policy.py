@@ -1,8 +1,26 @@
 """Mechanical public-source policy, separate from ownership and gameplay review."""
 from pathlib import PurePosixPath
+import hashlib
 import re
 from netal_sr_calibration import BINARY_FILES, ORACLE_SOURCES, validate_blob
 from netal_fg_calibration import BINARY_FILES as FG_BINARY_FILES, ORACLE_SOURCES as FG_ORACLE_SOURCES, validate_blob as validate_fg_blob
+
+SHOWCASE_GIF_PATH = 'docs/brand/netal-menubar-preview.gif'
+SHOWCASE_GIF_IDENTITY = {
+    'bytes': 1588998,
+    'sha256': 'd139b7e84495f9bcb3e411157c11562b7657f20945182dfae055ca1b7334644a',
+}
+
+
+def valid_showcase_gif(data):
+    # Only the exact visually reviewed export. Replacement artwork requires a
+    # separate policy review before its bytes are accepted from a contribution.
+    return (14 <= len(data) <= 10 * 1024 * 1024
+            and data[:6] in (b'GIF87a', b'GIF89a') and data[-1:] == b';'
+            and 0 < int.from_bytes(data[6:8], 'little') <= 1600
+            and 0 < int.from_bytes(data[8:10], 'little') <= 1000
+            and len(data) == SHOWCASE_GIF_IDENTITY['bytes']
+            and hashlib.sha256(data).hexdigest() == SHOWCASE_GIF_IDENTITY['sha256'])
 
 ROOT_FILES = {'LICENSES/CuMetal-Apache-2.0.txt', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', '.gitignore', '.gitattributes', '.github/CODEOWNERS', '.github/rulesets/main.json'}
 DOCS = {'docs/FG_SOURCE_BUILD.md', 'docs/SR_BOUNDARY_KERNELS_AND_MATH.md', 'docs/SOURCE_PROVENANCE_REVIEW.md', 'docs/SR_BOUNDARY_METADATA.md', 'docs/SR_ARITHMETIC_MODES.md', 'docs/SR_SOURCE_BUILD.md', 'docs/MODEL_SETUP.md', 'docs/README.md', 'docs/getting-started.md', 'docs/RELEASE.md', 'docs/architecture.md',
@@ -35,7 +53,8 @@ def allowed(path):
     if path.startswith('.github/'):
         return p.suffix in {'.yml', '.yaml', '.md'}
     if path.startswith('docs/brand/'):
-        return p.name in {'netal-banner.png', 'netal-icon-256.png', 'netal-appicon.png'}
+        return p.name in {'netal-banner.png', 'netal-icon-256.png', 'netal-appicon.png',
+                          'netal-menubar-overview.png'} or path == SHOWCASE_GIF_PATH
     if path.startswith('src/macos_app/NetalMenuBar/Resources/'):
         return p.suffix in {'.png', '.json'}
     # FG shader headers and the two host-generation includes are text sources.
@@ -56,6 +75,8 @@ def allowed(path):
 
 
 def content_findings(data, image=False, relative=None):
+    if relative == SHOWCASE_GIF_PATH:
+        return [] if valid_showcase_gif(data) else ['invalid-showcase-gif']
     if relative in FG_BINARY_FILES:
         try:
             validate_fg_blob(relative, data)

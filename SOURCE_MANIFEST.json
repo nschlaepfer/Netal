@@ -2440,8 +2440,8 @@
     },
     {
       "path": "scripts/check-contribution-content.py",
-      "bytes": 5393,
-      "sha256": "f40b3bf9346fed6801a3fa93921eb145c439ed44cdc9aa4c359cd0a803b2ffa3",
+      "bytes": 5616,
+      "sha256": "b2ddee7821b0d398a29e68dc48a831981a011aa10b9a75f868ba6daa4bfaf714",
       "mode": "0o644"
     },
     {
@@ -3616,8 +3616,8 @@
     },
     {
       "path": "scripts/public_source_policy.py",
-      "bytes": 4763,
-      "sha256": "b06747d0d65ccc8bf7dde910e151400d1bd27423670837a2c18228de20091c3a",
+      "bytes": 5754,
+      "sha256": "a611db6d0e16f220e68b7d6ef6c0c9e9696c2540b5ce1588fb6399ea05b08ef1",
       "mode": "0o644"
     },
     {
@@ -3952,8 +3952,8 @@
     },
     {
       "path": "scripts/test-contribution-content.py",
-      "bytes": 4073,
-      "sha256": "a70ce2793167f182b13ecd25e26ee1742351b75e09a92e02131c67a9d5bfb372",
+      "bytes": 5203,
+      "sha256": "b5a7225d81db05e15f8f89eeb9a2ab87e26a9fb9693a82baae61f04c89b12d43",
       "mode": "0o644"
     },
     {
