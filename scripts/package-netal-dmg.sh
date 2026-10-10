@@ -12,6 +12,15 @@ output="${2:A}"
 version="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$app/Contents/Info.plist")"
 [[ "$version" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || { print -u2 'Invalid app version'; exit 1; }
 codesign --verify --deep --strict "$app"
+if [[ -n "${NETAL_CODESIGN_IDENTITY:-}" ]]; then
+  signature_info="$(codesign -dv --verbose=2 "$app" 2>&1)"
+  [[ "$signature_info" == *'Authority=Developer ID Application:'* ]] || {
+    print -u2 'Release signing requires a Developer ID-signed app; sign the app before packaging.'; exit 1;
+  }
+  [[ "$signature_info" =~ 'flags=.*runtime' && "$signature_info" == *'Timestamp='* ]] || {
+    print -u2 'Release signing requires an app with hardened runtime and a secure timestamp.'; exit 1;
+  }
+fi
 stage="$(mktemp -d "${TMPDIR:-/tmp}/netal-dmg.XXXXXX")"
 trap 'rm -rf "$stage"' EXIT
 ditto --noextattr --norsrc "$app" "$stage/Netal.app"

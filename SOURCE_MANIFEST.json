@@ -3334,8 +3334,8 @@
     },
     {
       "path": "scripts/package-netal-dmg.sh",
-      "bytes": 2919,
-      "sha256": "9fcc9b06eb977060ccd81ebcfa638a3be2ff2fd04772caa8eb4a117492b6d0f3",
+      "bytes": 3414,
+      "sha256": "19a874f10875647ceb167995d6208f5d11813a23560277e5949c7c9e0ea0467a",
       "mode": "0o755"
     },
     {
