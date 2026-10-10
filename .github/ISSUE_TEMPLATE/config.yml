@@ -1,5 +1,5 @@
 blank_issues_enabled: false
 contact_links:
   - name: Setup and supported DLLs
-    url: https://github.com/nschlaepfer/Netal-public/blob/main/docs/MODEL_SETUP.md
+    url: https://github.com/nschlaepfer/Netal/blob/main/docs/MODEL_SETUP.md
     about: Check the exact supported input and the remaining runtime setup requirements first.

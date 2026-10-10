@@ -6,9 +6,9 @@ A native Metal neural-graphics runtime and macOS app. Netal's Super Resolution
 and native neural Frame Generation have worked inside Resident Evil Requiem
 through CrossOver.
 
-**Complete engine source candidate, currently private.** Public publication is
-pending resolution of the translated-input provenance documented below. This
-tree includes the actual SR/FG implementations, not just the app and test lab.
+**Experimental complete-source release.** This tree includes the actual SR/FG
+implementations, bridges, app and test lab. It is a research source release;
+installation still requires the explicit local inputs described below.
 
 Credit to [WaveCut / MLX-DLSS](https://github.com/iamwavecut/MLX-DLSS) for pioneering
 DLSS on Apple silicon. Both projects have real neural FG. Netal focuses on runtime
@@ -98,6 +98,7 @@ Original project code uses the included [MIT license](LICENSE), subject to
 specific notices. CuMetal helper code has Apache-2.0 attribution. Twenty-two
 retained shaders are explicitly marked as translations of runtime input; their
 distribution basis remains unresolved in [the source-origin review](docs/SOURCE_PROVENANCE_REVIEW.md).
-This candidate must not be described as publication-cleared solely because it builds.
+Publication and successful builds do not establish third-party distribution
+rights or extend the MIT license to translated inputs.
 
 Netal is independent of NVIDIA, Apple and CodeWeavers. DLSS is an NVIDIA trademark.

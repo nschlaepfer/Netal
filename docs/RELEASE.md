@@ -1,4 +1,7 @@
-# Netal 0.1 beta release gate
+# Netal source release and gameplay beta roadmap
+
+The October 10, 2026 publication is an experimental complete-source release.
+The downloadable gameplay beta described below remains a separate milestone.
 
 Target: SR + FG + a usable app. NR stays experimental with native and MLX considered separately. No normal-launch NR toggle is exposed until a continuous game path is validated.
 
@@ -7,7 +10,7 @@ Evil Requiem through CrossOver. [The current status](STATUS.md)
 records the positive game telemetry and maintainer observation. The unchecked
 items below concern a distributable build, complete provisioning and broader
 acceptance; they must not be read as a claim that in-game generation never worked.
-Repository rules are [prepared but plan-blocked while private](REPOSITORY_GOVERNANCE.md).
+Repository rules and their verification are documented in [governance](REPOSITORY_GOVERNANCE.md).
 
 ## Completed in the release-preparation branch
 

@@ -32,6 +32,6 @@ CuMetal (`Lulzx/cuda-metal`) is Apache-2.0 licensed. The local compiler snapshot
 
 Several source shaders carry explicit CuMetal generic-PTX-lowering markers. The compiler/helper license does **not** establish the rights in their input programs. These files are not cleared for public distribution merely because the surrounding project uses MIT or the export contains no model binaries. Run `scripts/source-provenance-inventory.py` to produce the bounded marked-file inventory. Unmarked source also needs origin review; the tool is not a complete ownership audit.
 
-The NVIDIA SDK headers remain external inputs. The published RTX SDK license contains restrictions on reverse engineering and distribution. This review has not established the governing terms, permissions, or any applicable exceptions for each archived runtime and translated input. Resolve the input provenance and distribution basis before publication; do not relabel such source as MIT by default.
+The NVIDIA SDK headers remain external inputs. The published RTX SDK license contains restrictions on reverse engineering and distribution. This review has not established the governing terms, permissions, or any applicable exceptions for each archived runtime and translated input. The input provenance and distribution basis remain unresolved in this experimental release; public availability does not relabel such source as MIT.
 
 Primary references: [CuMetal license](https://github.com/Lulzx/cuda-metal/blob/main/LICENSE), [NVIDIA RTX SDK license](https://github.com/NVIDIA/DLSS/blob/main/LICENSE.txt).

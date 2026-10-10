@@ -2,10 +2,9 @@
   "schema": "netal.complete-engine-source-candidate.v1",
   "research_base_revision": "c7359e9aa57b0e835448481b7848b387ee746ea5",
   "git_history_included": false,
-  "status": "complete-source-private-review-candidate",
+  "status": "experimental-complete-source-release",
   "publication_clearance": false,
   "publication_authorized_after_complete_preparation": true,
-  "open_gate": "runtime-derived shader input distribution basis",
   "proprietary_models_or_vendor_binaries_included": false,
   "scalar_calibration_binary_exceptions": 5,
   "files": [
@@ -29,8 +28,8 @@
     },
     {
       "path": ".github/ISSUE_TEMPLATE/config.yml",
-      "bytes": 256,
-      "sha256": "ad950730967228d752ab0551b3fc90a3cad36b63416d7e9366fd05ea960ef733",
+      "bytes": 249,
+      "sha256": "345e83619e2110ee0a4cd0fab0a8e4042a06993f32924d138cd185f8d2ecb531",
       "mode": "0o644"
     },
     {
@@ -107,14 +106,14 @@
     },
     {
       "path": "README.md",
-      "bytes": 5375,
-      "sha256": "c732be9441080048fc95a30e1c74f1a8d144288dc2cd8f282ff61a374abc862e",
+      "bytes": 5411,
+      "sha256": "ded1e92d179cfc239f214af89778539b72ca1632afec84711bf19fd9d5fcb433",
       "mode": "0o644"
     },
     {
       "path": "THIRD_PARTY_NOTICES.md",
-      "bytes": 4534,
-      "sha256": "db631a1fa0bcfcec6230cf9ce76f5767e480fd3380d54bd61d285c7023339d54",
+      "bytes": 4565,
+      "sha256": "60eb891a7a903f63dbf3a0f510127502975ec0eaf41aa3f092f1fc000dc7a4bd",
       "mode": "0o644"
     },
     {
@@ -149,8 +148,8 @@
     },
     {
       "path": "docs/PUBLIC_READINESS.md",
-      "bytes": 1780,
-      "sha256": "3b537189709c0daaf33500c076c4e497f6874443df8d407369f933752fe1d51e",
+      "bytes": 1941,
+      "sha256": "2c299e7d6596285ffe013de974305fa72a0839a8c7612d81fd831b09bb78ae95",
       "mode": "0o644"
     },
     {
@@ -161,14 +160,14 @@
     },
     {
       "path": "docs/RELEASE.md",
-      "bytes": 8728,
-      "sha256": "e4104d754f151f939b3e889b66ea35f1176253347bce9afcb8ba756de2d84cc9",
+      "bytes": 8910,
+      "sha256": "54a43ad3d34ecadd17e3ff9f52d1cac4fec444dec31d091e99b01dc72f424415",
       "mode": "0o644"
     },
     {
       "path": "docs/REPOSITORY_GOVERNANCE.md",
-      "bytes": 3983,
-      "sha256": "846b7b1de2b2c7f0d29a1f064d7429f6c62d35a4f38534f8e4b6dd956d95e824",
+      "bytes": 3908,
+      "sha256": "c906db7549ddfe05d307b27414cc09cf05945c253d5e252070e8002a96ee45dc",
       "mode": "0o644"
     },
     {
@@ -179,8 +178,8 @@
     },
     {
       "path": "docs/SOURCE_PROVENANCE_REVIEW.md",
-      "bytes": 4497,
-      "sha256": "0495303ae458c9618d61ac51a03c9e72697f663998d28157dee6476a2f00bb13",
+      "bytes": 4579,
+      "sha256": "0b573261a37a838cebe49e8c15ce7e73289ea4a13793cbbb7b59c44aa6df906d",
       "mode": "0o644"
     },
     {
@@ -209,8 +208,8 @@
     },
     {
       "path": "docs/STATUS.md",
-      "bytes": 2280,
-      "sha256": "504fa7c088b60b3c704cb13cad70b55fad35ec76b280f1f152ed11f4bd6cc02c",
+      "bytes": 2384,
+      "sha256": "91ef318ef0f41490235226d66f966c8d287d1d893962a5c807411f0ae9ee659a",
       "mode": "0o644"
     },
     {
@@ -11799,5 +11798,7 @@
       "sha256": "8be7e948b796c0322caee30a965744cffd06a6ce67a30786e32537ab69f3369f",
       "mode": "0o755"
     }
-  ]
+  ],
+  "publication_clearance_note": "No legal determination of translated-input distribution rights is established.",
+  "open_provenance_question": "runtime-derived shader input distribution basis"
 }

@@ -1,10 +1,10 @@
-# Complete engine source status
+# Experimental source release status
 
-This source candidate starts from the reviewed private development checkpoint,
-with fresh Git history separately from the preserved research archive.
-No public visibility change has been performed.
+The October 10, 2026 source release starts from the reviewed private development
+checkpoint, with fresh Git history separately from the preserved private research
+archive. The public repository is [Netal](https://github.com/nschlaepfer/Netal).
 
-## Verified on the source candidate
+## Verified on the released source
 
 | Area | Result | Limit |
 | --- | --- | --- |
@@ -20,13 +20,14 @@ The historical working Resident Evil SR/FG integration remains established.
 The new offscreen tests do not replace those game observations or certify a
 new downloadable package.
 
-## Remaining publication gates
+## Open source-origin and setup work
 
 The full source includes 22 explicitly marked runtime-derived shader inputs.
-The records do not establish their distribution basis. That question must be
-resolved without mislabeling translated material as original MIT code.
+The records do not establish their distribution basis. Publication does not
+resolve that question or make translated material original MIT code. The
+source-origin review remains open.
 
-Private data, binaries and old history are excluded from the candidate. The
+Private data, vendor/compiled binaries and old history are excluded from this tree. The
 five pinned scalar calibration files are separately identified measured data,
 not model tensors. Public setup still needs explicit DLL/model inputs and the
 documented scalar/FG provisioning steps. A complete engine source tree does not

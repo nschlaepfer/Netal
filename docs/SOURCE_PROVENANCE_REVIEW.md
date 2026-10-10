@@ -1,6 +1,6 @@
 # Source provenance review — current findings
 
-Publication is **not cleared** by this inventory. The source export's content/hash audit and the legal basis for distributing source are separate checks.
+This inventory does **not establish legal clearance**. Public availability and the source export's content/hash audit do not establish the legal basis for distributing translated input source. The review remains open in this experimental release.
 
 ## Identified compiler origin
 
@@ -30,7 +30,7 @@ Primary sources: [CuMetal license](https://github.com/Lulzx/cuda-metal/blob/main
 
 The two explicitly allowlisted RCP/RSQ data files come from synthetic arithmetic probes, not model inputs or captured game tensors. Their original CUDA sources and receipt seals are retained; current M3 measurements and exhaustive packing reproduce the runtime hashes. Historical NVIDIA repeat equality is reported in the record, but a second raw output is no longer available for rechecking. This origin/identity review is separate from translated-shader rights and overall publication clearance. See `runtime/arithmetic-calibration/manifest.json` and the accompanying reproduction instructions.
 
-## Required before publication
+## Open review work
 
 Map generated/translated files to their input origin and applicable terms. Preserve required third-party notices. For unresolved inputs, establish a supported distribution basis or replace the affected implementation while retaining the intended SR/FG functionality. Review the remaining unmarked tree and dependency binaries as well. Do not treat local test success as publication approval.
 
