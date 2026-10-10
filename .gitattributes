@@ -1,0 +1,5 @@
+*.dll binary
+*.metallib binary
+runtime/arithmetic-calibration/*.bin binary
+*.patch whitespace=-blank-at-eol
+runtime/fg-arithmetic-calibration/*.bin binary

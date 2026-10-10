@@ -1,0 +1,52 @@
+#pragma once
+#include <metal_stdlib>
+#include "hmma_exact_fast.metalh"
+using namespace metal;
+
+// Lane-parallel form of fg_hmma_f16_bits_16: sixteen lanes of a simdgroup half (lanes 0-15 or 16-31)
+// each hold one product; max_exp and the integer sum are xor-shuffle reductions that stay inside the
+// half. Same rule, same rounding, same result bits as the scalar oracle - the scalar repair passes were
+// latency-bound (a long serial chain per element over a few thousand threads), and this trades one
+// element per thread for sixteen threads per element.
+//
+// The sixteen aligned terms are each < 2^27 (2047*2047*8 << 2 = 134,086,688), so their signed sum fits
+// int32 (16 * 134,086,688 = 2,145,387,008 < 2^31 - 1); the prior's term is added afterwards in 64 bits.
+inline half fgf_hmma_f16_lanes16(ushort a_bits, ushort b_bits, half prior, uint lane) {
+  const uint a_field = (uint(a_bits) >> 10u) & 31u, b_field = (uint(b_bits) >> 10u) & 31u;
+  uint a_mantissa = uint(a_bits) & 1023u, b_mantissa = uint(b_bits) & 1023u;
+  if (a_field != 0u) a_mantissa += 1024u;
+  if (b_field != 0u) b_mantissa += 1024u;
+  const int a_exponent = a_field == 0u ? -14 : int(a_field) - 15;
+  const int b_exponent = b_field == 0u ? -14 : int(b_field) - 15;
+  const uint sig = a_mantissa * b_mantissa * 8u;
+  const int exponent = a_exponent + b_exponent;
+  const bool negative = ((a_bits ^ b_bits) & 0x8000u) != 0u;
+
+  int max_exp = sig != 0u ? max(exponent, -21) : -21;   // the oracle floors max_exp at -21 before taking the maximum
+  max_exp = max(max_exp, simd_shuffle_xor(max_exp, 1u));
+  max_exp = max(max_exp, simd_shuffle_xor(max_exp, 2u));
+  max_exp = max(max_exp, simd_shuffle_xor(max_exp, 4u));
+  max_exp = max(max_exp, simd_shuffle_xor(max_exp, 8u));
+
+  const ushort c_bits = as_type<ushort>(prior);
+  const uint c_field = (uint(c_bits) >> 10u) & 31u, c_fraction = uint(c_bits) & 1023u;
+  uint c_significand = 0u; int c_exponent = -1024;
+  if (c_field != 0u) { c_significand = (1024u + c_fraction) << 13u; c_exponent = int(c_field) - 15; }
+  else if (c_fraction != 0u) { const uint leading = 31u - clz(c_fraction); c_significand = c_fraction << (23u - leading); c_exponent = int(leading) - 24; }
+  if (c_significand != 0u) max_exp = max(max_exp, c_exponent);
+
+  const int shift = max_exp - exponent;
+  const uint aligned = shift > 31 ? 0u : (sig << 2u) >> uint(shift);
+  int term = negative ? -int(aligned) : int(aligned);
+  term += simd_shuffle_xor(term, 1u);
+  term += simd_shuffle_xor(term, 2u);
+  term += simd_shuffle_xor(term, 4u);
+  term += simd_shuffle_xor(term, 8u);
+  long total = long(term);
+  if (c_significand != 0u) {
+    const int cshift = max_exp - c_exponent;
+    const uint caligned = cshift > 31 ? 0u : (c_significand << 2u) >> uint(cshift);
+    total += (c_bits & 0x8000u) != 0u ? -long(caligned) : long(caligned);
+  }
+  return fgf_fixed_to_half_rne(total, max_exp - 25);
+}

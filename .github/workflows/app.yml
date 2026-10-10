@@ -1,0 +1,54 @@
+name: macOS app
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: macos-app-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  app:
+    # The app targets macOS 14+, but availability-guarded Liquid Glass APIs need SDK 26+.
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Report build environment
+        run: |
+          swift --version
+          xcrun --show-sdk-version
+      - name: Test app behavior
+        run: zsh scripts/test-macos-netal-menubar.sh
+      - name: Test CrossOver routing without launching games
+        run: |
+          python3 scripts/test-crossover-launch.py
+          python3 scripts/test-netal-portable-injector.py
+          python3 scripts/test-netal-wine-output.py
+          python3 scripts/test-netal-live-summary.py
+      - name: Test portable runtime helper with a synthetic host
+        run: zsh scripts/test-netal-launch-config.sh
+      - name: Test local model setup with synthetic fixtures
+        run: |
+          python3 scripts/test-netal-model-extraction.py
+          python3 scripts/test-netal-model-install.py
+          python3 scripts/test-netal-sr-assets.py
+          python3 scripts/test-netal-sr-abi.py
+          python3 scripts/test-netal-sr-manifest.py
+          python3 scripts/test-netal-sr-math.py
+          python3 scripts/test-netal-math-calibration.py
+          python3 scripts/test-lg2-latent-audit.py
+          zsh scripts/test-netal-sr-boundary-geometry.sh
+      - name: Test reference-mode runtime policy
+        run: zsh scripts/test-netal-sr-control.sh
+      - name: Test offline FG input transport
+        run: python3 scripts/test-fg-offline-sequence.py
+      - name: Test SR source assembly boundaries
+        run: python3 scripts/test-netal-sr-source-assembly.py
+      - name: Build app
+        run: zsh scripts/build-macos-netal-menubar.sh
+      - name: Validate export tooling
+        run: python3 scripts/test-public-source.py

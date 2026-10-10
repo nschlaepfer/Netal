@@ -1,0 +1,8 @@
+#pragma once
+
+#define fg_hmma_f16_bits_16 fg_hmma_f16_bits_16_loop_reference
+#include "../fg_conv/hmma_exact.metalh"
+#undef fg_hmma_f16_bits_16
+
+#include "hmma_exact_u32_meta8.metalh"
+#define fg_hmma_f16_bits_16 fg_hmma_f16_bits_16_u32_meta8

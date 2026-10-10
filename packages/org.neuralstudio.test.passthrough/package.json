@@ -1,0 +1,140 @@
+{
+  "schemaVersion": "1.0",
+
+  "package": {
+    "id": "org.neuralstudio.test.passthrough",
+    "name": "NeuralStudio Test Reference",
+    "version": "1.0.0",
+    "publisher": "NeuralStudio",
+    "description": "Deterministic open reference backend. Applies a trivial, verifiable transform so the full host pipeline - source, guide layer, broker, adapter, output - can be exercised end to end without any proprietary runtime. This is the conformance target for the adapter ABI and the CI pipeline.",
+    "license": { "id": "MIT", "file": "LICENSE" },
+    "tags": ["reference", "conformance", "ci", "open"]
+  },
+
+  "provenance": {
+    "distribution": "bundled",
+    "artifacts": [
+      {
+        "path": "ns_adapter_test.dll",
+        "sha256": "C5EFA0258B9433F6770ED53A6ACFADA24D1404BF3E616A4860B7B5EC5F5AD16E",
+        "role": "adapter",
+        "signature": { "required": false, "kind": "none" }
+      }
+    ],
+    "redistribution": {
+      "allowed": true,
+      "rationale": "First-party MIT-licensed source and binary. No third-party runtime is bundled.",
+      "reviewedBy": "owner",
+      "reviewedOn": "2026-08-29"
+    }
+  },
+
+  "backend": {
+    "type": "test",
+    "adapter": {
+      "abiVersion": 1,
+      "library": "ns_adapter_test.dll",
+      "entrypoint": "nsGetAdapterV1"
+    },
+    "hosting": "in-process",
+    "runtimeAcquisition": { "method": "bundled" }
+  },
+
+  "compatibility": {
+    "os": [{ "platform": "windows", "minVersion": "10.0.19041", "architectures": ["x64"] }],
+    "gpu": { "vendors": ["any"], "minVramMB": 0 },
+    "graphicsApis": ["d3d12", "cpu"],
+    "resolution": {
+      "min": { "width": 16, "height": 16 },
+      "max": { "width": 7680, "height": 4320 },
+      "multipleOf": { "width": 1, "height": 1 },
+      "dynamicResolution": true
+    }
+  },
+
+  "inputs": {
+    "required": [
+      {
+        "kind": "color",
+        "formats": ["r8g8b8a8_unorm", "r16g16b16a16_float"],
+        "resolution": "same-as-color"
+      }
+    ],
+    "optional": [
+      {
+        "kind": "depth",
+        "formats": ["r32_float"],
+        "resolution": "same-as-color",
+        "synthesizable": true,
+        "notes": "Ignored by the transform. Present so conformance tests can verify optional-guide plumbing."
+      }
+    ]
+  },
+
+  "conventions": {
+    "colorSpace": "linear",
+    "hdr": { "supported": false, "required": false }
+  },
+
+  "temporal": {
+    "stateful": false,
+    "historyFrames": 0,
+    "warmupFrames": 0
+  },
+
+  "output": {
+    "formats": ["r8g8b8a8_unorm", "r16g16b16a16_float"],
+    "scaling": { "mode": "same-size" },
+    "compositing": { "alpha": "opaque", "replacesSource": true, "requiresUiExclusion": false }
+  },
+
+  "performance": {
+    "vramEstimate": [
+      { "resolution": { "width": 1920, "height": 1080 }, "megabytes": 32 },
+      { "resolution": { "width": 3840, "height": 2160 }, "megabytes": 128 }
+    ],
+    "tiers": [
+      { "name": "Reference", "description": "Deterministic transform used for conformance assertions.", "targetFrameMs": 2 }
+    ]
+  },
+
+  "settings": [
+    {
+      "key": "Strength",
+      "label": "Effect strength",
+      "description": "Blend between the untouched source and the reference transform.",
+      "type": "float",
+      "default": 1.0,
+      "min": 0.0,
+      "max": 1.0,
+      "step": 0.01,
+      "safeRange": { "min": 0.0, "max": 1.0 },
+      "liveChangeable": true
+    },
+    {
+      "key": "Mode",
+      "label": "Transform",
+      "description": "Which deterministic transform to apply. Each has a known checksum the conformance suite asserts against.",
+      "type": "enum",
+      "default": 0,
+      "options": [
+        { "value": 0, "label": "Identity" },
+        { "value": 1, "label": "Invert" },
+        { "value": 2, "label": "Luminance" },
+        { "value": 3, "label": "Frame index tint" }
+      ],
+      "liveChangeable": true
+    },
+    {
+      "key": "SimulateFailureAfterFrames",
+      "label": "Simulate failure after N frames",
+      "description": "Test hook. When greater than zero the adapter reports a failure after N evaluations so the host's degrade, bypass, and failure-isolation paths can be exercised deliberately.",
+      "type": "int",
+      "default": 0,
+      "min": 0,
+      "max": 100000,
+      "liveChangeable": true,
+      "advanced": true
+    }
+  ]
+}

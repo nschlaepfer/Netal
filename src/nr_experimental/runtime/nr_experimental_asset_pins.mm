@@ -1,0 +1,43 @@
+#include "nr_experimental_assets.h"
+namespace nr_exp {
+// Pinned immutable assets, copied verbatim from the accepted encoder bundle's generated/asset_hashes.h
+// (parent root 3350d5f53e391a3be260c2d1d5b60065a9e23e24ba3d9f871f8bf9037ef2d633). No weight is changed by this lane; these hashes are how we prove it.
+static const AssetPin kAssets[] = {
+  {"block0.weights", "5fe2ab86289f7b21253d00368ce7a95f005ec3c8476abd7db22550b918962a5c"},
+  {"entry.metallib", "5698115e21cdd24add3e6a012d246c5b88d86baaee95c8abd8cc429aa78b23f0"},
+  {"instruction-deltas.u8", "768da747f3c7c799d768cd4410195934292cc838fbc083ec6a3ab9c04184f37b"},
+  {"instruction-escapes.u32", "c2e095109b1f220ed289ea09f5b2d10a4df9f15f5366355e7fdab30b455d40f5"},
+  {"pre.metallib", "05f7a0ab1ffdaeae5bb789acbbc8555b2afcfeef2b2fbd728a9b6b09970cc3ca"},
+  {"prefix.metallib", "9835441b353f0ecb1331c846c5e7e18b8a3fe40c0af383f3493968fd7f41a7ce"},
+  {"temporal-hardware.metallib", "6d6d3af83148085612675bec2d9a5a5b64d4b93de57cb6287e60424cf106175d"},
+  {"temporal-q8-round.metallib", "cd9df83c8355c7c68a3f7dd93c16270e2b2826f1791e403df48e527966208588"},
+  {"temporal-q8-truncate.metallib", "131a18100320cc33c407c60b407d00c1ba92f698474ee9be74f445c7d1a9b5c2"},
+  {"temporal-rcp-rom.bin", "7cf4f8cece6b18b07605edc9cb601a153346a79b10bf3b93c7ec058d57d29750"},
+  {"weights/block1.bin", "0270fb8f406d3d0a916953ddaf6ec5d29328fe95b9d6cb408ca0c25c91108e3a"},
+  {"weights/block10.bin", "77eacae2f2290c898c53b151b36bc7539bbc7b147628ef3f3b1ecc22b1f910d4"},
+  {"weights/block11.bin", "dd5440dccd5fa2be9b63421d2a67715b8c41abf783464601a78bf138f479a40f"},
+  {"weights/block12.bin", "6e74d269d3b545cbef475810dc6143d2ed4252d1b905893ed726dceb756f3962"},
+  {"weights/block13.bin", "535b8b432b76bd8fe857594a58b76985ec70775390fba55d14edfe2df6d5bdaa"},
+  {"weights/block14.bin", "6c7a05c82b823e09b0b843f5dd399af7a006410f3587191f62a43205a872724d"},
+  {"weights/block15.bin", "a3081eaee51296319ade0839add190cfdbe2adbf0f0a5e990df1f2a577ae9507"},
+  {"weights/block16.bin", "37c5928b15aa456cac02de082e96cd2b7c3e512915f17914000cded6858a86d8"},
+  {"weights/block17.bin", "478a4ccea0614d2eeccf1be093d9e72367b2afba49dd7e8c50547edbea67bd61"},
+  {"weights/block18.bin", "6c03840d01a50976357ed180eeeda50a2614b8b0ed7fc526aef6b089a906fd4c"},
+  {"weights/block19.bin", "f269c6404c6bd73611598ae265f951c73da96e8211a060324e38a703f58d32b4"},
+  {"weights/block2.bin", "379da9fb2027273f2dffa52a970a3950e97ca2d720fdf089fe4a1af409bf81c8"},
+  {"weights/block20.bin", "227945c0e2d727736867e0c2bb232f5bf6f29e42a6e7a5c92546fda9819bc9ac"},
+  {"weights/block21.bin", "5a61aad0a642e2398306329a865528777013480d97c384a8e626fe1d394828e8"},
+  {"weights/block22.bin", "cfb0343287054e38933dbf35c7dbb124fef50cfaf4234f7161575f00896cc02d"},
+  {"weights/block3.bin", "8f26be9b75d09960141bbf561a70e9628c269cc901934efdce362426ebbe1589"},
+  {"weights/block4.bin", "f0d05533694577fa313f2655b00ada84f231f87ebc66ebbb7e8f0f7ea1ac88d2"},
+  {"weights/block5.bin", "1b905577285978107b21b5730aac2b0105d45f757b5e78334291d9b4ab5646bb"},
+  {"weights/block6.bin", "380e368298920277d3bf9bf715730f2b5fdffe763fd1a3ed67ab9c3b0be1d682"},
+  {"weights/block7.bin", "cd990fde2971a8550e3bf0010842bc02fa3a07f4497f5b5b71dd7d264a3e3384"},
+  {"weights/block8.bin", "687d906bc5d6748b57ee3e519c114f9382d93db560b7f779461c1ab90f5237ae"},
+  {"weights/block9.bin", "934cebc771cfa1ed086f47f018426090e14ca4326dcb22843cbc17dff9851c32"},
+  {"wide128.metallib", "e1176801dc344e5a886d37f48e81703f29493bc2f29d3bd62b92a5c4b8eda7fe"},
+  {"wide256.metallib", "a3b5ef33ba4e0bc85d6ed3dedb79a737c1c54c0bae7a17750f19a83f61cb5fc2"},
+};
+const char* parent_root() { return "3350d5f53e391a3be260c2d1d5b60065a9e23e24ba3d9f871f8bf9037ef2d633"; }
+const AssetPin* pinned_assets(size_t& count) { count = sizeof(kAssets) / sizeof(kAssets[0]); return kAssets; }
+} // namespace nr_exp

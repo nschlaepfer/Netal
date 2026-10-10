@@ -1,0 +1,71 @@
+// Harness: ViT stage kernels (accepted vit.metallib) vs three-product kernels on live block inputs; byte compare with the strict reference stage outputs
+// and with each other; exactly-once coverage; median GPU ms; repair counts. usage: vit_tp_probe VIT_LIB TP_LIB STAGE(expand|contract|projection) A RES W EXPECT OUT_DIR [reps]
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include <algorithm>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <vector>
+#include <cstdlib>
+namespace fs = std::filesystem;
+static std::vector<uint8_t> Read(const fs::path& p) { std::ifstream s(p, std::ios::binary | std::ios::ate); if (!s) throw std::runtime_error("open failed: " + p.string()); const size_t n = size_t(s.tellg()); s.seekg(0); std::vector<uint8_t> v(n); s.read(reinterpret_cast<char*>(v.data()), std::streamsize(n)); return v; }
+struct NrParams { uint32_t tokens, block_index, stage, reserved; }; struct TpPrepParams { uint32_t steps, cols, step_bytes, reserved; };
+int main(int argc, const char** argv) { @autoreleasepool { try {
+  if (argc < 9) throw std::runtime_error("usage: vit_tp_probe VIT_LIB TP_LIB STAGE A RES W EXPECT OUT_DIR [reps]");
+  const std::string stage = argv[3]; const fs::path out = argv[8]; if (fs::exists(out)) throw std::runtime_error("preserve previous run"); fs::create_directories(out); const int reps = argc > 9 ? std::atoi(argv[9]) : 5;
+  NSError* err = nil; id<MTLDevice> dev = MTLCreateSystemDefaultDevice(); id<MTLCommandQueue> q = [dev newCommandQueue];
+  auto lib = [&](const char* p) { id<MTLLibrary> l = [dev newLibraryWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:p]] error:&err]; if (!l) throw std::runtime_error(err.localizedDescription.UTF8String); return l; };
+  auto pso = [&](id<MTLLibrary> l, const std::string& n) { id<MTLComputePipelineState> p = [dev newComputePipelineStateWithFunction:[l newFunctionWithName:[NSString stringWithUTF8String:n.c_str()]] error:&err]; if (!p) throw std::runtime_error(n + ": " + err.localizedDescription.UTF8String); return p; };
+  id<MTLLibrary> vlib = lib(argv[1]), tlib = lib(argv[2]); auto A = Read(argv[4]), RES = Read(argv[5]), Wb = Read(argv[6]), EXP = Read(argv[7]);
+  const uint32_t T = 640; uint32_t steps, cols, step_bytes; size_t out_bytes; std::string base_kernel; uint32_t base_threads;
+  if (stage == "expand") { steps = 32; cols = 4096; step_bytes = 131072; out_bytes = size_t(T) * 4096; base_kernel = "nr_vit_expand"; base_threads = T * 256; }
+  else if (stage == "contract") { steps = 128; cols = 1024; step_bytes = 32768; out_bytes = size_t(T) * 1024; base_kernel = "nr_vit_contract"; base_threads = T * 64; }
+  else if (stage == "projection") { steps = 32; cols = 1024; step_bytes = 32768; out_bytes = size_t(T) * 1024; base_kernel = "nr_vit_projection"; base_threads = T * 64; }
+  else if (stage == "qkv") { steps = 32; cols = 3072; step_bytes = 98304; out_bytes = size_t(T) * 1024; base_kernel = "nr_vit_qkv"; base_threads = T * 32; }
+  else if (stage == "attention") { steps = 20; cols = 32; step_bytes = 0; out_bytes = size_t(T) * 1024; base_kernel = "nr_vit_attention"; base_threads = T * 32; }
+  else throw std::runtime_error("stage");
+  if (EXP.size() != out_bytes) throw std::runtime_error("expected size");
+  const bool qkv = stage == "qkv", att = stage == "attention"; std::vector<uint8_t> EXPK, EXPV, RSQ, VB, RCP; if (qkv) { EXPK = Read(getenv("NR_QKV_K")); EXPV = Read(getenv("NR_QKV_V")); RSQ = Read(getenv("NR_RSQRT")); } if (att) { VB = Read(getenv("NR_ATT_V")); RCP = Read(getenv("NR_RCP")); }
+  auto up = [&](const std::vector<uint8_t>& v) { id<MTLBuffer> b = [dev newBufferWithLength:v.size() + 16 options:MTLResourceStorageModeShared]; std::memset(b.contents, 0, v.size() + 16); std::memcpy(b.contents, v.data(), v.size()); return b; };
+  auto zero = [&](size_t n) { id<MTLBuffer> b = [dev newBufferWithLength:n + 16 options:MTLResourceStorageModeShared]; std::memset(b.contents, 0, n + 16); return b; };
+  id<MTLBuffer> ba = up(A), bres = up(RES), bw = up(Wb), bk0 = zero(qkv ? out_bytes : 16), bv0 = zero(qkv ? out_bytes : 16), bk1 = zero(qkv ? out_bytes : 16), bv1 = zero(qkv ? out_bytes : 16), bck0 = zero(qkv ? out_bytes * 4 : 16), bcv0 = zero(qkv ? out_bytes * 4 : 16), bck1 = zero(qkv ? out_bytes * 4 : 16), bcv1 = zero(qkv ? out_bytes * 4 : 16), brsq = qkv ? up(RSQ) : zero(16), bvv = att ? up(VB) : zero(16), brcp = att ? up(RCP) : zero(16); NrParams prm{T, 0, 0, 0}; id<MTLBuffer> bprm = [dev newBufferWithLength:sizeof(prm) options:MTLResourceStorageModeShared]; std::memcpy(bprm.contents, &prm, sizeof(prm));
+  auto median = [](std::vector<double> v) { std::sort(v.begin(), v.end()); return v[v.size() / 2]; };
+  // baseline
+  id<MTLComputePipelineState> pb = pso(vlib, base_kernel); id<MTLBuffer> bout0 = zero(out_bytes), bcov0 = zero(out_bytes * 4); std::vector<double> tb;
+  for (int i = 0; i < reps; ++i) { std::memset(bout0.contents, 0x5a, out_bytes); std::memset(bcov0.contents, 0, out_bytes * 4 + 16);
+    id<MTLCommandBuffer> cmd = [q commandBuffer]; id<MTLComputeCommandEncoder> e = [cmd computeCommandEncoder]; [e setComputePipelineState:pb];
+    if (stage == "expand") { [e setBuffer:ba offset:0 atIndex:0]; [e setBuffer:bw offset:0 atIndex:1]; [e setBuffer:bout0 offset:0 atIndex:2]; [e setBuffer:bcov0 offset:0 atIndex:3]; [e setBuffer:bprm offset:0 atIndex:4]; }
+    else if (att) { [e setBuffer:ba offset:0 atIndex:0]; [e setBuffer:bres offset:0 atIndex:1]; [e setBuffer:bvv offset:0 atIndex:2]; [e setBuffer:bout0 offset:0 atIndex:3]; [e setBuffer:bcov0 offset:0 atIndex:4]; [e setBuffer:brcp offset:0 atIndex:5]; [e setBuffer:bprm offset:0 atIndex:6]; }
+    else if (qkv) { std::memset(bk0.contents, 0x5a, out_bytes); std::memset(bv0.contents, 0x5a, out_bytes); std::memset(bck0.contents, 0, out_bytes * 4 + 16); std::memset(bcv0.contents, 0, out_bytes * 4 + 16); [e setBuffer:ba offset:0 atIndex:0]; [e setBuffer:bw offset:0 atIndex:1]; [e setBuffer:bout0 offset:0 atIndex:2]; [e setBuffer:bk0 offset:0 atIndex:3]; [e setBuffer:bv0 offset:0 atIndex:4]; [e setBuffer:bcov0 offset:0 atIndex:5]; [e setBuffer:bck0 offset:0 atIndex:6]; [e setBuffer:bcv0 offset:0 atIndex:7]; [e setBuffer:brsq offset:0 atIndex:8]; [e setBuffer:bprm offset:0 atIndex:9]; }
+    else { [e setBuffer:ba offset:0 atIndex:0]; [e setBuffer:bres offset:0 atIndex:1]; [e setBuffer:bw offset:0 atIndex:2]; [e setBuffer:bout0 offset:0 atIndex:3]; [e setBuffer:bcov0 offset:0 atIndex:4]; [e setBuffer:bprm offset:0 atIndex:5]; }
+    [e dispatchThreads:MTLSizeMake(base_threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [e endEncoding]; [cmd commit]; [cmd waitUntilCompleted]; if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("baseline failed"); tb.push_back((cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0); }
+  // prototype: prep + kernel
+  id<MTLComputePipelineState> pp = pso(tlib, att ? "nr_vit_attn_prep" : "nr_vit_tp_prep"), pt = pso(tlib, "nr_vit_" + stage + "_tp");
+  const size_t KW = 32u * 32u * 640u; id<MTLBuffer> bkl = zero(att ? KW * 2 : 16), bkh = zero(att ? KW * 2 : 16), bklh = zero(att ? KW * 2 : 16), bkmax = zero(att ? 32u * 640u : 16), bvl = zero(att ? KW * 2 : 16), bvh = zero(att ? KW * 2 : 16), bvlh = zero(att ? KW * 2 : 16), bvmax = zero(att ? 32u * 20u * 32u : 16);
+  const size_t WH = size_t(steps) * 32 * cols; id<MTLBuffer> bwl = zero(WH * 2), bwh = zero(WH * 2), bwlh = zero(WH * 2), bmaxcls = zero(size_t(steps) * cols), bout1 = zero(out_bytes), bcov1 = zero(out_bytes * 4), bstats = zero(64);
+  TpPrepParams ppp{steps, cols, step_bytes, 0}; id<MTLBuffer> bppp = [dev newBufferWithLength:sizeof(ppp) options:MTLResourceStorageModeShared]; std::memcpy(bppp.contents, &ppp, sizeof(ppp)); std::vector<double> tp, tprep;
+  for (int i = 0; i < reps; ++i) { std::memset(bout1.contents, 0x5a, out_bytes); std::memset(bcov1.contents, 0, out_bytes * 4 + 16); std::memset(bstats.contents, 0, 64);
+    if (att) { id<MTLCommandBuffer> cmd = [q commandBuffer]; id<MTLComputeCommandEncoder> e = [cmd computeCommandEncoder]; [e setComputePipelineState:pp]; [e setBuffer:bres offset:0 atIndex:0]; [e setBuffer:bvv offset:0 atIndex:1]; [e setBuffer:bkl offset:0 atIndex:2]; [e setBuffer:bkh offset:0 atIndex:3]; [e setBuffer:bklh offset:0 atIndex:4]; [e setBuffer:bkmax offset:0 atIndex:5]; [e setBuffer:bvl offset:0 atIndex:6]; [e setBuffer:bvh offset:0 atIndex:7]; [e setBuffer:bvlh offset:0 atIndex:8]; [e setBuffer:bvmax offset:0 atIndex:9];
+      [e dispatchThreads:MTLSizeMake(32 * 640 + 32 * 20 * 32, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [e endEncoding]; [cmd commit]; [cmd waitUntilCompleted]; if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("attn prep failed"); tprep.push_back((cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0); }
+    else { id<MTLCommandBuffer> cmd = [q commandBuffer]; id<MTLComputeCommandEncoder> e = [cmd computeCommandEncoder]; [e setComputePipelineState:pp]; [e setBuffer:bw offset:(qkv ? 128 : 0) atIndex:0]; [e setBuffer:bwl offset:0 atIndex:1]; [e setBuffer:bwh offset:0 atIndex:2]; [e setBuffer:bwlh offset:0 atIndex:3]; [e setBuffer:bmaxcls offset:0 atIndex:4]; [e setBuffer:bppp offset:0 atIndex:5];
+      [e dispatchThreads:MTLSizeMake(size_t(steps) * cols, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [e endEncoding]; [cmd commit]; [cmd waitUntilCompleted]; if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("prep failed"); tprep.push_back((cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0); }
+    { id<MTLCommandBuffer> cmd = [q commandBuffer]; id<MTLComputeCommandEncoder> e = [cmd computeCommandEncoder]; [e setComputePipelineState:pt]; uint32_t bi = 0;
+      if (att) { [e setBuffer:ba offset:0 atIndex:0]; [e setBuffer:bres offset:0 atIndex:1]; [e setBuffer:bvv offset:0 atIndex:2]; [e setBuffer:bout1 offset:0 atIndex:3]; [e setBuffer:bcov1 offset:0 atIndex:4]; [e setBuffer:brcp offset:0 atIndex:5]; [e setBuffer:bprm offset:0 atIndex:6]; [e setBuffer:bkl offset:0 atIndex:7]; [e setBuffer:bkh offset:0 atIndex:8]; [e setBuffer:bklh offset:0 atIndex:9]; [e setBuffer:bkmax offset:0 atIndex:10]; [e setBuffer:bvl offset:0 atIndex:11]; [e setBuffer:bvh offset:0 atIndex:12]; [e setBuffer:bvlh offset:0 atIndex:13]; [e setBuffer:bvmax offset:0 atIndex:14]; [e setBuffer:bstats offset:0 atIndex:15]; bi = 16; }
+      else if (qkv) { std::memset(bk1.contents, 0x5a, out_bytes); std::memset(bv1.contents, 0x5a, out_bytes); std::memset(bck1.contents, 0, out_bytes * 4 + 16); std::memset(bcv1.contents, 0, out_bytes * 4 + 16); [e setBuffer:ba offset:0 atIndex:0]; [e setBuffer:bw offset:0 atIndex:1]; [e setBuffer:bout1 offset:0 atIndex:2]; [e setBuffer:bk1 offset:0 atIndex:3]; [e setBuffer:bv1 offset:0 atIndex:4]; [e setBuffer:bcov1 offset:0 atIndex:5]; [e setBuffer:bck1 offset:0 atIndex:6]; [e setBuffer:bcv1 offset:0 atIndex:7]; [e setBuffer:brsq offset:0 atIndex:8]; [e setBuffer:bprm offset:0 atIndex:9]; bi = 10; }
+      else { [e setBuffer:ba offset:0 atIndex:bi++]; if (stage != "expand") [e setBuffer:bres offset:0 atIndex:bi++]; [e setBuffer:bw offset:0 atIndex:bi++]; [e setBuffer:bout1 offset:0 atIndex:bi++]; [e setBuffer:bcov1 offset:0 atIndex:bi++]; [e setBuffer:bprm offset:0 atIndex:bi++]; }
+      [e setBuffer:bwl offset:0 atIndex:bi++]; [e setBuffer:bwh offset:0 atIndex:bi++]; [e setBuffer:bwlh offset:0 atIndex:bi++]; [e setBuffer:bmaxcls offset:0 atIndex:bi++]; [e setBuffer:bstats offset:0 atIndex:bi++];
+      [e dispatchThreadgroups:MTLSizeMake((qkv || att) ? 32 : cols / 64, T / 16, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [e endEncoding]; [cmd commit]; [cmd waitUntilCompleted]; if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error(cmd.error ? cmd.error.localizedDescription.UTF8String : "tp failed"); tp.push_back((cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0); } }
+  const uint8_t* o0 = static_cast<const uint8_t*>(bout0.contents); const uint8_t* o1 = static_cast<const uint8_t*>(bout1.contents); size_t d0 = 0, d1 = 0, d01 = 0; for (size_t i = 0; i < out_bytes; ++i) { d0 += o0[i] != EXP[i]; d1 += o1[i] != EXP[i]; d01 += o0[i] != o1[i]; }
+  size_t dq1 = d1, dk1 = 0, dv1 = 0, dq0 = d0, dk0 = 0, dv0 = 0;
+  if (qkv) { const uint8_t* k0 = static_cast<const uint8_t*>(bk0.contents); const uint8_t* k1 = static_cast<const uint8_t*>(bk1.contents); const uint8_t* v0 = static_cast<const uint8_t*>(bv0.contents); const uint8_t* v1 = static_cast<const uint8_t*>(bv1.contents);
+    for (size_t i = 0; i < out_bytes; ++i) { dk0 += k0[i] != EXPK[i]; dv0 += v0[i] != EXPV[i]; dk1 += k1[i] != EXPK[i]; dv1 += v1[i] != EXPV[i]; d01 += (k0[i] != k1[i]) + (v0[i] != v1[i]); }
+    d0 += dk0 + dv0; d1 += dk1 + dv1; std::cout << "qkv per-output differing from reference: baseline q " << dq0 << " k " << dk0 << " v " << dv0 << " | tp q " << dq1 << " k " << dk1 << " v " << dv1 << "\n"; }
+  auto once = [&](id<MTLBuffer> b) { const uint32_t* c = static_cast<const uint32_t*>(b.contents); size_t n = 0; for (size_t i = 0; i < out_bytes; ++i) n += c[i] == 1; return n; };
+  const uint32_t repaired = static_cast<const uint32_t*>(bstats.contents)[0]; std::ofstream(out / "out_tp.bin", std::ios::binary).write(reinterpret_cast<const char*>(o1), out_bytes);
+  std::ostringstream js; js << "{\n \"stage\": \"" << stage << "\",\n \"reps\": " << reps << ",\n \"baseline_gpu_ms_median\": " << median(tb) << ",\n \"tp_gpu_ms_median\": " << median(tp) << ",\n \"tp_prep_gpu_ms_median\": " << median(tprep) << ",\n \"baseline_bytes_differing_from_reference\": " << d0 << ",\n \"tp_bytes_differing_from_reference\": " << d1 << ",\n \"bytes_differing_baseline_vs_tp\": " << d01 << ",\n \"baseline_coverage_once\": " << (once(bcov0) + (qkv ? once(bck0) + once(bcv0) : 0)) << ",\n \"tp_coverage_once\": " << (once(bcov1) + (qkv ? once(bck1) + once(bcv1) : 0)) << ",\n \"bytes\": " << out_bytes << ",\n \"tp_repaired_element_steps\": " << repaired << ",\n \"element_steps\": " << size_t(T) * cols * steps << "\n}\n";
+  std::ofstream(out / "tp-run.json") << js.str(); std::cout << js.str(); return (d1 == 0 && d0 == 0) ? 0 : 1;
+} catch (const std::exception& e) { std::cerr << "vit_tp_probe: " << e.what() << "\n"; return 2; } } }

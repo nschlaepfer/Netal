@@ -1,0 +1,32 @@
+{
+  "schema": "netal.capture-source.v1",
+  "origin_revision": "6c9f9934a978823f33b0b0df8d5bbd7a23040513",
+  "files": [
+    {
+      "path": "dlss_sr_nvcuda_trace.c",
+      "origin_path": "src/macos_host/cuda_trace/dlss_sr_nvcuda_trace.c",
+      "sha256": "049386b65e52eebcc283e38f6d8d7c97eaf81e667fe4f463618d85cb535f043c"
+    },
+    {
+      "path": "nvapi_arch_trace.c",
+      "origin_path": "src/macos_host/cuda_trace/nvapi_arch_trace.c",
+      "sha256": "4833ab76d82320550f8d547886b6d9f72dbe8e6d64e35046612dbde2f2074144"
+    },
+    {
+      "path": "nvngx_cuda_thunk.c",
+      "origin_path": "src/macos_host/cuda_trace/nvngx_cuda_thunk.c",
+      "sha256": "2574c5a7f05af2691eaf12a3ae1080cb1a507b6ebd383ba98e9642fe02223d24"
+    },
+    {
+      "path": "dlss_sr_cuda_capture.cpp",
+      "origin_path": "src/macos_host/cuda_trace/dlss_sr_cuda_capture.cpp",
+      "sha256": "a5b84127864f79ec34f7bec93765ff445d034c7a5363f7ee6f7a8c743300cd01"
+    },
+    {
+      "path": "dlss_sr_nvcuda_forward_trace.cpp",
+      "origin_path": "src/macos_host/cuda_trace/dlss_sr_nvcuda_forward_trace.cpp",
+      "sha256": "a24229f4bba94a4ec53b19d1b0014359c2d0f14ef21bc4886cbfdc8bff2c1604"
+    }
+  ],
+  "notes": "Original Netal research capture helpers. NVIDIA SDK headers remain an explicit external build input; no vendor runtime or weights are included."
+}

@@ -1,0 +1,26 @@
+LIBRARY KERNEL32.dll
+EXPORTS
+CloseHandle
+CreateFileW
+CreateRemoteThread
+CreateThread
+CreateToolhelp32Snapshot
+DisableThreadLibraryCalls
+ExitProcess
+GetCommandLineW
+GetExitCodeThread
+GetLastError
+GetModuleHandleW
+GetProcAddress
+GetStdHandle
+OpenProcess
+Process32FirstW
+Process32NextW
+Module32FirstW
+Module32NextW
+ReadProcessMemory
+VirtualAllocEx
+VirtualFreeEx
+WaitForSingleObject
+WriteFile
+WriteProcessMemory

@@ -1,0 +1,61 @@
+#pragma once
+#include <metal_stdlib>
+using namespace metal;
+
+// Fused bilinear fetch for the bottom families (launches 68, 69, 82, 83): the idea of MLX-DLSS's fused output
+// head (FrameGenerationFusedConv.swift, rev 0ca2dea) - the convolution computes each 2x-upsampled operand from
+// the low-resolution source at the point of use instead of reading a materialised upsampled tensor - applied
+// to the guarded exact pipelines. The arithmetic is the connected block's formula, element for element
+// (connected_upsamples.metal, the form that matched the RTX 5090): the right-hand products rounded to half,
+// one half fma per row blend, the lower row weighted and rounded, one half fma for the column blend. The
+// vector forms are componentwise IEEE, so every element is the scalar formula's bits. The rounding of the
+// interpolated value to half is inherent in the half arithmetic, as in MLX-DLSS's half4 round trip.
+// Compile with -fno-fast-math -ffp-contract=off so the rounded products never contract into the fmas.
+
+struct FuTap { uint A, B, D, E; half wx0, wx1, wy0, wy1; };
+
+// Geometry of one upsampled tap (x, y) over a SW x SH source with C channels per pixel. ok = false (the tap is
+// outside the upsampled grid) yields in-bounds zero offsets; the caller selects zero, as the materialised path
+// does. Source indices and weights are computed exactly as the materialised pre-kernels compute them.
+inline FuTap fu_tap(bool ok, int x, int y, uint SW, uint SH, uint C) {
+  FuTap T;
+  T.A = 0u; T.B = 0u; T.D = 0u; T.E = 0u;
+  T.wx0 = half(0.0h); T.wx1 = half(0.0h); T.wy0 = half(0.0h); T.wy1 = half(0.0h);
+  if (!ok) return T;
+  const float fx = (float(x) - 0.5f) * 0.5f, fy = (float(y) - 0.5f) * 0.5f;
+  const uint x0 = fx < 0 ? 0u : min(uint(fx), SW - 1u), x1 = fx < 0 ? 0u : min(uint(fx + 1.0f), SW - 1u);
+  const uint y0 = fy < 0 ? 0u : min(uint(fy), SH - 1u), y1 = fy < 0 ? 0u : min(uint(fy + 1.0f), SH - 1u);
+  T.wx1 = half(fx - float(x0)); T.wx0 = half((float(x0) - fx) + 1.0f);
+  T.wy1 = half(fy - float(y0)); T.wy0 = half((float(y0) - fy) + 1.0f);
+  T.A = (y0 * SW + x0) * C; T.B = (y0 * SW + x1) * C;
+  T.D = (y1 * SW + x0) * C; T.E = (y1 * SW + x1) * C;
+  return T;
+}
+
+// channel c of the tap
+inline half fu_fetch1(device const half* src, thread const FuTap& T, uint c) {
+  const half a = src[T.A + c], b = src[T.B + c], d = src[T.D + c], e = src[T.E + c];
+  const half rb = T.wx1 * b; const half top = fma(T.wx0, a, rb);
+  const half re = T.wx1 * e; const half bot = fma(T.wx0, d, re);
+  const half lower = T.wy1 * bot; return fma(T.wy0, top, lower);
+}
+
+// channels c, c+1 (c even: offsets are multiples of C >= 16, so the half2 loads are aligned)
+inline half2 fu_fetch2(device const half* src, thread const FuTap& T, uint c) {
+  const half2 a = *reinterpret_cast<device const half2*>(src + T.A + c), b = *reinterpret_cast<device const half2*>(src + T.B + c);
+  const half2 d = *reinterpret_cast<device const half2*>(src + T.D + c), e = *reinterpret_cast<device const half2*>(src + T.E + c);
+  const half2 wx0 = half2(T.wx0), wx1 = half2(T.wx1);
+  const half2 rb = wx1 * b; const half2 top = fma(wx0, a, rb);
+  const half2 re = wx1 * e; const half2 bot = fma(wx0, d, re);
+  const half2 lower = half2(T.wy1) * bot; return fma(half2(T.wy0), top, lower);
+}
+
+// channels c..c+3 (c a multiple of 4)
+inline half4 fu_fetch4(device const half* src, thread const FuTap& T, uint c) {
+  const half4 a = *reinterpret_cast<device const half4*>(src + T.A + c), b = *reinterpret_cast<device const half4*>(src + T.B + c);
+  const half4 d = *reinterpret_cast<device const half4*>(src + T.D + c), e = *reinterpret_cast<device const half4*>(src + T.E + c);
+  const half4 wx0 = half4(T.wx0), wx1 = half4(T.wx1);
+  const half4 rb = wx1 * b; const half4 top = fma(wx0, a, rb);
+  const half4 re = wx1 * e; const half4 bot = fma(wx0, d, re);
+  const half4 lower = half4(T.wy1) * bot; return fma(half4(T.wy0), top, lower);
+}

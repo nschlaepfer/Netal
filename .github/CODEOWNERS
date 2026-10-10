@@ -1,0 +1,10 @@
+# Maintainer review is required by CONTRIBUTING.md. Enforcement depends on the ruleset.
+* @nschlaepfer
+
+/.github/ @nschlaepfer
+/scripts/ @nschlaepfer
+/src/fg_runtime/ @nschlaepfer
+/src/macos_host/ @nschlaepfer
+/runtime/ @nschlaepfer
+/LICENSE* @nschlaepfer
+/THIRD_PARTY_NOTICES.md @nschlaepfer

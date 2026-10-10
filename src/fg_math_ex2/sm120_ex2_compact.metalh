@@ -1,0 +1,58 @@
+#pragma once
+
+#include <metal_stdlib>
+
+namespace neuralstudio_fg_math {
+
+inline int sm120_ex2_correction(device const uchar* packed,
+                                uint index) {
+  const uint shift = (index & 3u) * 2u;
+  const uint code = (uint(packed[index >> 2u]) >> shift) & 3u;
+  return int(code) - 1;
+}
+
+inline uint sm120_ex2_corrected_bits(float input,
+                                    device const uchar* packed,
+                                    uint index) {
+  const uint fast_bits = as_type<uint>(metal::fast::exp2(input));
+  const int delta = sm120_ex2_correction(packed, index);
+  return uint(int(fast_bits) - delta);
+}
+
+// Exact sm_120 ex2.approx.ftz.f32 reconstruction for finite x <= 0.  Each
+// two-bit correction records fast::exp2_bits - RTX_bits for one math-domain
+// input.  The streams contain instruction corrections, never frame/model
+// outputs.
+inline float sm120_ex2_nonpositive_compact(
+    float value,
+    device const uchar* unit_corrections,
+    device const uchar* fraction_corrections) {
+  const uint bits = as_type<uint>(value);
+  const uint exponent = (bits >> 23u) & 0xffu;
+  if (value == 0.0f || exponent <= 103u) {
+    return 1.0f;
+  }
+  if (exponent <= 126u) {
+    const uint raw_index = uint((-value) * 16777216.0f);
+    const uint index = metal::min(raw_index, 16777216u);
+    const float input = -float(index) * as_type<float>(uint(0x33800000u));
+    return as_type<float>(sm120_ex2_corrected_bits(
+        input, unit_corrections, index));
+  }
+  if (value < -126.0f) {
+    return 0.0f;
+  }
+  const float integral = metal::floor(value);
+  const int binary_scale = int(integral) + 2;
+  const float normalized = value - float(binary_scale);
+  const uint raw_index = uint((normalized + 2.0f) * 8388608.0f);
+  const uint index = metal::min(raw_index, 8388608u);
+  const float input = metal::fma(float(index),
+                                 as_type<float>(uint(0x34000000u)), -2.0f);
+  const uint base_bits = sm120_ex2_corrected_bits(
+      input, fraction_corrections, index);
+  const int scaled_bits = int(base_bits) + binary_scale * 0x00800000;
+  return as_type<float>(uint(scaled_bits));
+}
+
+}  // namespace neuralstudio_fg_math

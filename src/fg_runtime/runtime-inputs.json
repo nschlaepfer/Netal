@@ -1,0 +1,370 @@
+{
+  "schema": "netal.fg.runtime-inputs.v1",
+  "profile": "640x360",
+  "runtime_sha256": "5d5cbf14d2727d47f93fd10bf77bd91708ae122482a6f86fd564971641ebd47b",
+  "model_capture_manifest_sha256": "2a1179d4a25be030f772cd90ca7d017ed6eac9291917f7d43ea9b0cd5ac6a294",
+  "model": {
+    "default-token-000063.bin": {
+      "bytes": 56320,
+      "sha256": "44595b02307a6b934a124abe476cfd327440e2acba7f5ed69f73195ca743e3d9"
+    },
+    "default-token-000065.bin": {
+      "bytes": 10240,
+      "sha256": "eb99328524fddc9f5f3fac12b8e3a4011e66a75e071cd07126a70c553458bc60"
+    },
+    "default-token-000067.bin": {
+      "bytes": 299008,
+      "sha256": "4191924ff335d5018987f2526f933cb4cdbb9145411e3ce34f63c8206321be55"
+    },
+    "default-token-000069.bin": {
+      "bytes": 593920,
+      "sha256": "c0c5648f9cb839e41d0e786c8034aa0bcc931b6ac84c58cfbde0502dc8a53404"
+    },
+    "default-token-000071.bin": {
+      "bytes": 1187840,
+      "sha256": "fe2c3057f2e894219601d3d7200eabfa97d990e08ccb23b43d52dfcba2d2fb93"
+    },
+    "default-token-000073.bin": {
+      "bytes": 540672,
+      "sha256": "e23316a86707c1d3d377aa0711df47d05976ad1a30f6428524d030dd17145de9"
+    },
+    "default-token-000075.bin": {
+      "bytes": 532480,
+      "sha256": "9f20d6589cc9269ad020233e68196d66eba0e8a76497374cf6d445385f94dbc4"
+    },
+    "default-token-000077.bin": {
+      "bytes": 270336,
+      "sha256": "9e5da09b93650c74e89d5262aa8a9a6a3dcbd0d753dc8c9d9aed39731e39b2a0"
+    },
+    "default-token-000079.bin": {
+      "bytes": 135168,
+      "sha256": "3969384493583e98dcf357d3046a10a5b836585261f3e584605bf11e23fb8d46"
+    },
+    "default-token-000081.bin": {
+      "bytes": 69632,
+      "sha256": "a0c6690faee2838521c6ad0f9445425d639446c0ef1b7fed9b43d21e7a8ec650"
+    },
+    "default-token-000083.bin": {
+      "bytes": 69632,
+      "sha256": "3a13970b482f1f78ede1bfe531956c203f08f99077c81bda2d1e4d0f453cf9a0"
+    },
+    "default-token-000085.bin": {
+      "bytes": 69632,
+      "sha256": "47361a699fa6514332dc560cf2416872256e61d1b36b1ca29df323a53ee2be77"
+    },
+    "default-token-000087.bin": {
+      "bytes": 34816,
+      "sha256": "327bd9b02da4aaac8b251320f60b4aeccb0df7df84bba44d7f1f6a9fdf62c934"
+    },
+    "default-token-000089.bin": {
+      "bytes": 18432,
+      "sha256": "e24f67110bab401ab7f70a861f3f09d2cd3cd6abf8d1aa158ba3300efb64797e"
+    },
+    "default-token-000091.bin": {
+      "bytes": 9216,
+      "sha256": "325d7dfac5620a89edc1d2315731414cf755c50506ea5758a8c3cf563649577c"
+    },
+    "default-token-000093.bin": {
+      "bytes": 5120,
+      "sha256": "bb98eb15be7d255a15a46994589705560e0691e273e286a36a68fd679a1890a9"
+    },
+    "default-token-000095.bin": {
+      "bytes": 2560,
+      "sha256": "477c68ebace499e2e1ac331f214fae3e9fb4df815a9e7d8142a0f1fb414b340e"
+    },
+    "default-token-000106.bin": {
+      "bytes": 9216,
+      "sha256": "14058e1781a3e362cd9f0106cf5c3fcd985ede67f1391ff3dfc73bceeceeae38"
+    },
+    "default-token-000108.bin": {
+      "bytes": 64,
+      "sha256": "349bbe2fcd8fc31407bfe238f4889871f0d64dd593b4146b59eca837fcc9a77f"
+    },
+    "default-token-000110.bin": {
+      "bytes": 18432,
+      "sha256": "be4a2cdb5d93c3b3ee3ff5ee8663d27017488664ca8682313740ff99aec4b829"
+    },
+    "default-token-000112.bin": {
+      "bytes": 64,
+      "sha256": "097bd45ed222a90e9311fd89bbb8bca8db92760ec932380d3c44e29eb3870b69"
+    },
+    "default-token-000114.bin": {
+      "bytes": 36864,
+      "sha256": "c314eefc0c076af12dc246cbffbcf32fe78b50640b451567aa85832eff367092"
+    },
+    "default-token-000116.bin": {
+      "bytes": 128,
+      "sha256": "9718b129b9bf59ee1a683c6001880cfb910a5e95e9b2338e4fcfc742d7f83be7"
+    },
+    "default-token-000118.bin": {
+      "bytes": 73728,
+      "sha256": "819fa5692e109843574dd0608312014a32abc7e7499784066142a4d82c486985"
+    },
+    "default-token-000120.bin": {
+      "bytes": 128,
+      "sha256": "ba63d29aecb3781452154a32c8e771471f49ff4cd1d7f56d06a1cd89081cd461"
+    },
+    "default-token-000122.bin": {
+      "bytes": 73728,
+      "sha256": "5f4ac25a208ceb920b34fae48b7cee7107cd3e8da565e0a689a2cab93fe7ce93"
+    },
+    "default-token-000124.bin": {
+      "bytes": 128,
+      "sha256": "a7548519b77593645b6d5c46777597c0eba48255cd9f079f77d166da4c406bb5"
+    },
+    "default-token-000126.bin": {
+      "bytes": 73728,
+      "sha256": "42a3ff7432377294d3c1fbdbe3c9876d13b989afb3952dd8ce964c531eae47a3"
+    },
+    "default-token-000128.bin": {
+      "bytes": 128,
+      "sha256": "f0dcd605c4a628cd940630048aeca237e2f563ec5219f265d93d382abef569ff"
+    },
+    "default-token-000130.bin": {
+      "bytes": 73728,
+      "sha256": "672b9d32f4510335489894e12379bdc53a82ba27474c4484f6a58e1a18657af3"
+    },
+    "default-token-000132.bin": {
+      "bytes": 128,
+      "sha256": "591d8e9cb8e6c383b40636a814e714e676857deecfea6331792d84131edbf618"
+    },
+    "default-token-000134.bin": {
+      "bytes": 73728,
+      "sha256": "54356c51efe3b2a4aa798275b73e1f16857d1976eaa99bfffe32c1d6f9905eae"
+    },
+    "default-token-000136.bin": {
+      "bytes": 128,
+      "sha256": "8f2b5996e111aa7d5d9711f0c58cea678de5974e3a733ae6a1a8bf1e0ec5840c"
+    },
+    "default-token-000138.bin": {
+      "bytes": 73728,
+      "sha256": "7323eede30ef99e54156437d5f0430c266c1bf076018ad942afd48e7a62eca47"
+    },
+    "default-token-000140.bin": {
+      "bytes": 128,
+      "sha256": "7b48edd449f5442b4af26a7ac5d9e610aa0f087422347d7acfe6fa2d46b573d8"
+    },
+    "default-token-000142.bin": {
+      "bytes": 73728,
+      "sha256": "971c7195720f720d7ce59564d9ee85259adfd0f66b2f2c426ca7f43c9290877c"
+    },
+    "default-token-000144.bin": {
+      "bytes": 128,
+      "sha256": "755ff7524a6855c81f50da913721a63f8fe39aa9f8106e577f14a0575a24633e"
+    },
+    "default-token-000146.bin": {
+      "bytes": 73728,
+      "sha256": "145a29061230186864b92a934c6dcafa00ddede91381002ce7086e42c13b9490"
+    },
+    "default-token-000148.bin": {
+      "bytes": 128,
+      "sha256": "89e683bf9d2d108add777b4fb521d9d72940c66270cf96d1735943bf423bb93d"
+    },
+    "default-token-000150.bin": {
+      "bytes": 110592,
+      "sha256": "6b59f16f1be43617ebf0c94ff29cf7c8b7a2f2c7b7bfb41df8f9ede585e70684"
+    },
+    "default-token-000152.bin": {
+      "bytes": 192,
+      "sha256": "c3e301df2e15c48e0c2fb35fc636b944653c6f91071a101d71b256b740224d29"
+    },
+    "default-token-000154.bin": {
+      "bytes": 4608,
+      "sha256": "4d477655f6ec78e0e6a0d3c41e0848e537091c0c311fb04d986ad8891823e4e8"
+    },
+    "default-token-000156.bin": {
+      "bytes": 16,
+      "sha256": "0a9a85630034bb3dc5442cd52381424c1e7b9c676014b764477341005cb2f998"
+    },
+    "default-token-000158.bin": {
+      "bytes": 5184,
+      "sha256": "255701f510034a1ec801207b0542c2d49919d131c35d1337a60ad16fdc9004e6"
+    },
+    "default-token-000160.bin": {
+      "bytes": 32,
+      "sha256": "8ad9d15f85e8cea4e0a5b67792f39e170e75c7db010f727c7894e2c23be5d4c1"
+    },
+    "default-token-000162.bin": {
+      "bytes": 9216,
+      "sha256": "33dfd20f3a6901ed847959663a234434ddc64d1a3a2b4d171bde63a7e21d4af9"
+    },
+    "default-token-000164.bin": {
+      "bytes": 64,
+      "sha256": "f9a1b4cf11f4f4163d976260d8acf61a3a58e0db6ee7357bb502cb82b81f7889"
+    },
+    "default-token-000166.bin": {
+      "bytes": 18432,
+      "sha256": "bf39c57db6f20c38951cc91584a98543feb8f396c1529667d7541ce6d4732162"
+    },
+    "default-token-000168.bin": {
+      "bytes": 64,
+      "sha256": "87d1d98747c14b03644c43ef21aae52ad19a3058d0f5ce673d954bc3c9d3ebeb"
+    },
+    "default-token-000170.bin": {
+      "bytes": 18432,
+      "sha256": "1ee5ffe7c824fec11aade50a433dd5c7d18e3f13452c84154c920f9b42e81653"
+    },
+    "default-token-000172.bin": {
+      "bytes": 64,
+      "sha256": "4cf2f999a3b60e58553c0fa0e32c134a2de378ee22d6d4d0a0140cb2e640b882"
+    },
+    "default-token-000174.bin": {
+      "bytes": 18432,
+      "sha256": "a11cfbf3ae8b114b6e98f39fc59d11df69d9fc52741255130019cb7cd22f93b4"
+    },
+    "default-token-000176.bin": {
+      "bytes": 64,
+      "sha256": "0898c1586b71e2ea5bbd4d9cbaad3e15f416743544446cc8d2157a4f23f628fa"
+    },
+    "default-token-000178.bin": {
+      "bytes": 18432,
+      "sha256": "21f1e5dcf02d33ad5eec044251148b5f851d264f86529a63633edb8a8ae2fe75"
+    },
+    "default-token-000180.bin": {
+      "bytes": 64,
+      "sha256": "ff53999e00052d0f16117a358f65efddb1d36814cc8820edc3b0f56fca630a07"
+    },
+    "default-token-000182.bin": {
+      "bytes": 18432,
+      "sha256": "87b22102aab453ff63e8f2245a9ee9d9adce55b1b489d43a6246ae7b6b9d23fd"
+    },
+    "default-token-000184.bin": {
+      "bytes": 64,
+      "sha256": "2d134dee471fda6e55f345531803da054d8edf9c6a0385a637843f5e39d0619f"
+    },
+    "default-token-000186.bin": {
+      "bytes": 18432,
+      "sha256": "f07e7bd536bbc5bd4dbb7e4d87c9575073d4fb8b3c119a11dae7b1cfbdce8170"
+    },
+    "default-token-000188.bin": {
+      "bytes": 64,
+      "sha256": "07d8006bd5c7857575653d74815dc300ca71048a72f105165f0a2534b7fec2b0"
+    },
+    "default-token-000190.bin": {
+      "bytes": 18432,
+      "sha256": "d819d65c7f2582134c098b99b53105dd64c630554a072ef579a2d4bc0b51c713"
+    },
+    "default-token-000192.bin": {
+      "bytes": 64,
+      "sha256": "715c6b649120b4d1449a0b8654d19101ab660ca3f490d8b827778c817cf9c30b"
+    },
+    "default-token-000194.bin": {
+      "bytes": 18432,
+      "sha256": "ab3a82644cdaca91b322abe6f835a63ef073005fceacf1cb8a1e66096c3bdac3"
+    },
+    "default-token-000196.bin": {
+      "bytes": 64,
+      "sha256": "a301af6f017ef2324d205769e43c4327fbc9e9aa20dce506b2663acc0adca06e"
+    },
+    "default-token-000198.bin": {
+      "bytes": 27648,
+      "sha256": "4ab572a084310d9f79b7878aefd73a356900ea8428320b861c6de28c114977d6"
+    },
+    "default-token-000200.bin": {
+      "bytes": 96,
+      "sha256": "3ae35c7933b00a52114c7a75f0184bd480c5c814d2204271bd46da8f88772913"
+    },
+    "default-token-000202.bin": {
+      "bytes": 2304,
+      "sha256": "1514d5a5c51a81d8436de6e8e538275895dafc2e072512dbdcbe640871ec48f0"
+    },
+    "default-token-000204.bin": {
+      "bytes": 16,
+      "sha256": "89f7b17382bc6f08bbbc9d416da1c4c5b72abaf0c4faf870966a2585f912b493"
+    }
+  },
+  "math": {
+    "rom.bin": {
+      "bytes": 2097152,
+      "sha256": "7cf4f8cece6b18b07605edc9cb601a153346a79b10bf3b93c7ec058d57d29750"
+    },
+    "sigmoid.bin": {
+      "bytes": 262144,
+      "sha256": "394394a5258bad437495d68076be75d8413fa0ed5b752400e3947c332437b850"
+    },
+    "ex2-unit.bin": {
+      "bytes": 4194305,
+      "sha256": "60c2ae1a0869ce6f10ba093a33def68ecdbf4ba0d789cd186289586b63b9f234"
+    },
+    "ex2-fraction.bin": {
+      "bytes": 2097153,
+      "sha256": "76bacb1adf8e53accdd6a40a64940c073f001e091232e9119b155f2ab25f1a13"
+    }
+  },
+  "redistribution_clearance": false,
+  "required_engine_files": [
+    "include/fg_runtime.h",
+    "lib/libnetal_fg_runtime-arm64.a",
+    "lib/libnetal_fg_runtime-x86_64.a",
+    "lib/libnetal_fg_runtime.a",
+    "libs/block1_bot0.metallib",
+    "libs/block1_bot0_hw.metallib",
+    "libs/block1_bot1.metallib",
+    "libs/block1_bot1_hw.metallib",
+    "libs/block1_conv0.metallib",
+    "libs/block1_conv0_hw.metallib",
+    "libs/block1_conv1.metallib",
+    "libs/block1_conv1_hw.metallib",
+    "libs/block1_conv2.metallib",
+    "libs/block1_conv2_hw.metallib",
+    "libs/bot0.metallib",
+    "libs/bot0_hw.metallib",
+    "libs/bot1.metallib",
+    "libs/bot1_hw.metallib",
+    "libs/central.metallib",
+    "libs/compact_ordered.metallib",
+    "libs/compact_ordered_ind.metallib",
+    "libs/compact_suspects.metallib",
+    "libs/compositor_l87.metallib",
+    "libs/connected_upsamples.metallib",
+    "libs/conv0.metallib",
+    "libs/conv0_hw.metallib",
+    "libs/conv1.metallib",
+    "libs/conv1_hw.metallib",
+    "libs/conv2.metallib",
+    "libs/conv2_hw.metallib",
+    "libs/conv_1x1.metallib",
+    "libs/conv_1x1_hw.metallib",
+    "libs/conv_3x3.metallib",
+    "libs/conv_3x3_hw.metallib",
+    "libs/conv_pre.metallib",
+    "libs/conv_pre_hw.metallib",
+    "libs/elementwise.metallib",
+    "libs/initial_merge.metallib",
+    "libs/l10_l12.metallib",
+    "libs/l11.metallib",
+    "libs/l19.metallib",
+    "libs/l3_l13.metallib",
+    "libs/l4_l14.metallib",
+    "libs/l5_l15.metallib",
+    "libs/l6_l16.metallib",
+    "libs/l7_l17.metallib",
+    "libs/l8_l18.metallib",
+    "libs/l9.metallib",
+    "libs/mid_l52.metallib",
+    "libs/mid_l53.metallib",
+    "libs/mid_l54.metallib",
+    "libs/mid_l55.metallib",
+    "libs/p_b0bot1.metallib",
+    "libs/p_b1bot0.metallib",
+    "libs/p_b1bot1.metallib",
+    "libs/p_b1conv0.metallib",
+    "libs/p_b1conv1.metallib",
+    "libs/p_b1conv2b.metallib",
+    "libs/p_b1conv2r.metallib",
+    "libs/p_bot0.metallib",
+    "libs/p_conv0.metallib",
+    "libs/p_conv1.metallib",
+    "libs/p_conv2b.metallib",
+    "libs/p_conv2r.metallib",
+    "libs/p_conv2r8.metallib",
+    "libs/p_conv_pre.metallib",
+    "libs/pooling.metallib",
+    "libs/postprocess_l84.metallib",
+    "libs/postprocess_l85.metallib",
+    "libs/postprocess_l86.metallib",
+    "libs/upsample.metallib",
+    "libs/upsample3.metallib",
+    "libs/upscale-prefix.metallib"
+  ]
+}

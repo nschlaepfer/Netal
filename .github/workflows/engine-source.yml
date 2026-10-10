@@ -1,0 +1,37 @@
+name: Engine source
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: engine-source-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  engine-source:
+    runs-on: macos-26
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Make the Apple Metal compiler available
+        run: |
+          if ! xcrun metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+          xcrun metal --version
+      - name: Compile complete FG engine without models
+        run: python3 scripts/build-netal-fg-engine.py --output "$RUNNER_TEMP/netal-fg-engine"
+      - name: Compile SR reference, boundary and texture kernels
+        run: |
+          python3 scripts/build-netal-sr-reference-kernels.py --output "$RUNNER_TEMP/netal-sr-reference"
+          python3 scripts/build-netal-sr-boundary-kernels.py --output "$RUNNER_TEMP/netal-sr-boundaries"
+          python3 scripts/build-netal-sr-texture-kernels.py --output "$RUNNER_TEMP/netal-sr-textures"
+      - name: Link native and CrossOver bridges against source-built FG
+        env:
+          NEURALSTUDIO_FG_BUNDLE: ${{ runner.temp }}/netal-fg-engine
+        run: |
+          zsh scripts/build-macos-netal-native-bridge.sh
+          zsh scripts/build-macos-re9-metalfx-noop-bridge.sh

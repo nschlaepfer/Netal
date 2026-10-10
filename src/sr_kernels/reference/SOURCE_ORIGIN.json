@@ -1,0 +1,96 @@
+{
+  "schema": "netal.sr.reference-source-origin.v1",
+  "records": [
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_enc0_layer.metal",
+      "original_source": "dltss_pwin_enc0_layer_checked.metal",
+      "source_sha256": "35c0f118dadff037ee4016d7393b32af574798da6e546fdbb3dae255abd0317d",
+      "prepared_library_sha256": "86ec8cac60715cd74df618592b80aabc38f6480aad849367f5cda3c3c5a9cb0c",
+      "alias": "dltss_pwin_enc0_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_enc1_layer.metal",
+      "original_source": "dltss_pwin_enc1_layer_checked.metal",
+      "source_sha256": "44d443a33f35b0302d55f2629606a5fda0dad48d9123b919e880ee6a8eba9019",
+      "prepared_library_sha256": "e720323c32f1c01ec20876c767bef701bad152d181b37e8654a3deb36bce9e37",
+      "alias": "dltss_pwin_enc1_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_enc2_layer.metal",
+      "original_source": "dltss_pwin_enc2_layer_checked.metal",
+      "source_sha256": "d47521e6cc190e61044d76dbe486242757a15a097723669f0cdeee676d030eb9",
+      "prepared_library_sha256": "e9dd927cd04f99ea9048ac9fb0f5b9f10f426a5dba79cf81b1175d1355979b1c",
+      "alias": "dltss_pwin_enc2_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_enc3_layer.metal",
+      "original_source": "dltss_pwin_enc3_layer_checked.metal",
+      "source_sha256": "1f5cad0b32bb57b45a405f0108d565b23f614e5efffedbf90eb2d36839c64d3c",
+      "prepared_library_sha256": "8086869a49e94e1e874f170efa3bb6a5aca9762bbd3100a3ab73aab4bd79927e",
+      "alias": "dltss_pwin_enc3_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_enc4_layer.metal",
+      "original_source": "dltss_pwin_enc4_layer_checked.metal",
+      "source_sha256": "ad275a3ded18489d57da7ef8d46699e27900371e5c5b63d4e20526571d4744a1",
+      "prepared_library_sha256": "60e2b1cdb48f17023647148d12b168beb80be8ca978153fbb3632744c71521d3",
+      "alias": "dltss_pwin_enc4_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_dec5_layer.metal",
+      "original_source": "dltss_pwin_dec5_layer_checked.metal",
+      "source_sha256": "d331643aefb5e8b0b531424bc0c4a9584e5354e68532efa1428f1b54b5b6b9da",
+      "prepared_library_sha256": "1316e08d7106b1682f0ba1ff100de67da426844493b8b265239f87bb53e1cdb7",
+      "alias": "dltss_pwin_dec5_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_dec4_layer.metal",
+      "original_source": "dltss_pwin_dec4_layer_checked.metal",
+      "source_sha256": "4ad69a71cddaac044a619f701a9a6d59c40e39a113088a03e84f3d33c3cc2ccf",
+      "prepared_library_sha256": "ce5832810699162094fb6412827e077603d0b84ca0c43d05b9159004740cc05a",
+      "alias": "dltss_pwin_dec4_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_dec3_layer.metal",
+      "original_source": "dltss_pwin_dec3_layer_checked.metal",
+      "source_sha256": "2fb64b15811ac2b34d4cabee4cbc73e43c56f4452b9eae8fa8ba38bd0765d6f6",
+      "prepared_library_sha256": "b934b277daa5e2343022c895d77e345e85d76ebc6c856d48e9ac46bf8bae69f5",
+      "alias": "dltss_pwin_dec3_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_dec2_layer.metal",
+      "original_source": "dltss_pwin_dec2_layer_checked.metal",
+      "source_sha256": "384e257753d82c21ce7dc97c418cc9c87fd910679a238f5a70b6d246652f21ce",
+      "prepared_library_sha256": "fbc3e72c55aeded84460334f6d664f3b630d3c413c7b90d188690acc1c80a28e",
+      "alias": "dltss_pwin_dec2_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_dec1_layer.metal",
+      "original_source": "dltss_pwin_dec1_layer_checked.metal",
+      "source_sha256": "04b9e5341278872cd78cce1172b799bbfb5c400d06697484bc83fb30af4187aa",
+      "prepared_library_sha256": "86e2a4494a0354fbbb862821e767748001db83b92279d758bcf819c7ee8e9ceb",
+      "alias": "dltss_pwin_dec1_layer_checked.metallib",
+      "redistribution_cleared": false
+    },
+    {
+      "source": "src/sr_kernels/reference/dltss_pwin_dec0_layer.metal",
+      "original_source": "dltss_pwin_dec0_layer_checked.metal",
+      "source_sha256": "00adcea1150de118ca42fc32ef2ad5488604a6ecccaaa3ec07c3c1b71a2d992a",
+      "prepared_library_sha256": "5a2ee06f884c9d64060fff8b6a93f69bc8050488eddb01ffcfff580c8dca6965",
+      "alias": "dltss_pwin_dec0_layer_checked.metallib",
+      "redistribution_cleared": false
+    }
+  ],
+  "generator": "CuMetal generic lowering with retained project checked arithmetic helpers",
+  "input_rights": "review-required",
+  "publication_clearance": false
+}

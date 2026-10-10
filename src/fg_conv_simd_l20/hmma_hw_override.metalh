@@ -1,0 +1,16 @@
+#pragma once
+// Hardware lowering of the HMMA f16 stage for the game path: the exact helper reproduces NVIDIA's
+// per-term truncation and single rounding bit for bit; this replaces it with an fp32 FMA chain over the
+// 16 products followed by one rounding to half (the same fp16-accumulate-per-stage shape, Apple
+// arithmetic). Selected per metallib (`*_hw.metallib`); the exact build stays the oracle.
+#define fg_hmma_f16_bits_16 fg_hmma_f16_bits_16_loop_reference
+#include "../fg_conv/hmma_exact.metalh"
+#undef fg_hmma_f16_bits_16
+
+inline half fg_hmma_f16_bits_16_hw(thread const ushort* a_values, thread const ushort* b_values, half prior) {
+  float sum = float(prior);
+  for (uint inner = 0u; inner < 16u; ++inner)
+    sum = fma(float(as_type<half>(a_values[inner])), float(as_type<half>(b_values[inner])), sum);
+  return half(sum);
+}
+#define fg_hmma_f16_bits_16 fg_hmma_f16_bits_16_hw

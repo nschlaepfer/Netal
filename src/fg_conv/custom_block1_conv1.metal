@@ -1,0 +1,6 @@
+#include <metal_stdlib>
+#include "hmma_exact.metalh"
+using namespace metal;
+inline uint wi(uint tile,uint ic,uint oc){uint g=oc/8u,n=oc%8u,k=ic%16u,lane=n*4u+(k%8u)/2u,frag=(k>=8u?2u:0u)+(k&1u);return g*1152u+tile*128u+(frag>=2u?64u:0u)+lane*2u+(frag&1u);}
+inline half cv(device const half*w,device const half*b,device const half*in,uint x,uint y,uint oc){half a=b[oc];for(uint t=0;t<9;++t){int ix=int(x)+int(t%3u)-1,iy=int(y)+int(t/3u)-1;bool ok=ix>=0&&ix<320&&iy>=0&&iy<184;uint base=ok?(uint(iy)*320u+uint(ix))*16u:0u;ushort av[16],bv[16];for(uint k=0;k<16;++k){av[k]=ok?as_type<ushort>(in[base+k]):ushort(0);bv[k]=as_type<ushort>(w[wi(t,k,oc)]);}a=fg_hmma_f16_bits_16(av,bv,a);}half slope=half(0.01f);return min(max(max(a,half(a*slope)),half(-6.0f)),half(6.0f));}
+kernel void fg_custom_block1_conv1(device const half*w[[buffer(0)]],device const half*b[[buffer(1)]],device const half*in[[buffer(2)]],device half*out[[buffer(3)]],uint3 g[[thread_position_in_grid]]){if(g.x>=160||g.y>=92||g.z>=32)return;uint x=2*g.x,y=2*g.y,oc=g.z;half a=cv(w,b,in,x,y,oc),bb=cv(w,b,in,x+1,y,oc),c=cv(w,b,in,x,y+1,oc),d=cv(w,b,in,x+1,y+1,oc);half p=half(a+bb);p=half(p+c);p=half(p+d);out[(g.y*160u+g.x)*32u+oc]=half(p*half(0.25f));}

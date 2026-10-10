@@ -1,0 +1,322 @@
+{
+  "schemaVersion": "1.0",
+
+  "package": {
+    "id": "com.nvidia.ngx.dlss-nr",
+    "name": "NVIDIA DLSS Neural Rendering",
+    "version": "310.8.0",
+    "publisher": "NVIDIA Corporation",
+    "description": "Adapter for NVIDIA's DLSS Neural Rendering runtime (NGX feature 18) driven through Streamline 2.13. The signed NVIDIA runtime is never bundled; the adapter locates an authorized installation on the machine. Validated on an RTX 5090 with driver 616.56.",
+    "license": {
+      "id": "Proprietary",
+      "notice": "The NVIDIA DLSSNR runtime is NVIDIA-signed proprietary software. NeuralStudio locates it; it does not redistribute it. Consult the applicable NVIDIA terms before sharing."
+    },
+    "tags": ["nvidia", "ngx", "dlss", "neural-rendering", "proprietary", "hdr"]
+  },
+
+  "provenance": {
+    "distribution": "adapter-located",
+    "artifacts": [
+      {
+        "path": "ns_adapter_ngx.dll",
+        "sha256": "4C8EC3C47F7D0F2109AB11D97443A615D9C2EC0A10608D938F2E038DD372D2F1",
+        "role": "adapter",
+        "sizeBytes": 210944,
+        "signature": {
+          "required": false,
+          "kind": "none",
+          "notes": "Development builds are pinned by SHA-256. Release builds require a separate NeuralStudio code-signing policy before publication."
+        }
+      },
+      {
+        "path": "runtime/neuralstudio-dlssnr-bridge-worker.exe",
+        "sha256": "809E35620E14DF9F9B7E0E4A7ADFDDEAF52E3749714544AF34B584E686300B9B",
+        "role": "runtime",
+        "sizeBytes": 79872,
+        "signature": { "required": false, "kind": "none", "notes": "First-party deterministic build pinned by SHA-256." }
+      },
+      {
+        "path": "runtime/sl.interposer.dll",
+        "sha256": "D7138D0D345569CA40FB36FADEAABB2269041BC85049D76D718328431E7EFE05",
+        "role": "runtime",
+        "sizeBytes": 677376,
+        "signature": { "required": false, "kind": "none", "notes": "NeuralStudio Streamline shim build pinned by SHA-256." }
+      },
+      {
+        "path": "runtime/sl.common.dll",
+        "sha256": "5C144677DE65CCD9759292C6F73196E8C19F4BE423698DB2D73705DEED9F73BA",
+        "role": "runtime",
+        "sizeBytes": 854528,
+        "signature": { "required": false, "kind": "none", "notes": "NeuralStudio Streamline shim build pinned by SHA-256." }
+      },
+      {
+        "path": "runtime/neuralstudio/nvngx.dll",
+        "sha256": "EF0F22BCDF0D8667CA762944B3AC4637B1B969DBF5F47D8671A9B085F064DF40",
+        "role": "runtime",
+        "sizeBytes": 10752,
+        "signature": { "required": false, "kind": "none", "notes": "NeuralStudio NGX population shim build pinned by SHA-256." }
+      }
+    ],
+    "redistribution": {
+      "allowed": false,
+      "rationale": "The located NVIDIA runtime is not redistributable, and this adapter encodes a private options ABI recovered by auditing a signed NVIDIA plugin build. Both require explicit legal review before any public release package may include this adapter.",
+      "reviewedBy": "owner",
+      "reviewedOn": "2026-08-29"
+    }
+  },
+
+  "backend": {
+    "type": "ngx",
+    "adapter": {
+      "abiVersion": 1,
+      "library": "ns_adapter_ngx.dll",
+      "entrypoint": "nsGetAdapterV1"
+    },
+    "hosting": "sandboxed",
+    "runtimeAcquisition": {
+      "method": "locate",
+      "minRuntimeVersion": "310.8.0",
+      "searchPaths": ["${packageRoot}\\runtime"],
+      "requiredExports": ["slInit", "slSetTagForFrame", "slDLSSNRSetOptions"],
+      "requiredFiles": [
+        {
+          "name": "sl.dlss_nr.dll",
+          "sha256": "9F6672E5E0170DC118A3188D21BDA187E1FC1AA3502895B21AB846D23165C11D",
+          "signature": { "required": true, "kind": "authenticode", "expectedSigner": "NVIDIA Corporation" }
+        },
+        {
+          "name": "nvngx_dlssnr.dll",
+          "sha256": "E16BCF15E16E13F527491CDF7845B2FE6521A738D8F7C9C721866A8496E1FC8E",
+          "signature": { "required": true, "kind": "authenticode", "expectedSigner": "NVIDIA Corporation" }
+        }
+      ],
+      "signature": {
+        "required": true,
+        "kind": "authenticode",
+        "expectedSigner": "NVIDIA Corporation",
+        "notes": "Applies only to the separately located NVIDIA runtime. The host refuses session creation when validation fails."
+      },
+      "notes": "The installer may locate an authorized provider copy elsewhere, but it must hard-link or copy the verified files into the private package runtime before execution. This ensures validation and loading address the same files. slSetTagForFrame is mandatory; the host refuses older Streamline fallbacks."
+    }
+  },
+
+  "compatibility": {
+    "os": [{ "platform": "windows", "minVersion": "10.0.19041", "architectures": ["x64"] }],
+    "gpu": {
+      "vendors": ["nvidia"],
+      "minArchitecture": "blackwell",
+      "minVramMB": 12288,
+      "requiredFeatures": ["tensor-cores", "fp16"]
+    },
+    "driver": {
+      "minVersion": "616.56",
+      "knownGoodVersions": ["616.56"]
+    },
+    "graphicsApis": ["d3d12"],
+    "resolution": {
+      "min": { "width": 640, "height": 360 },
+      "max": { "width": 7680, "height": 4320 },
+      "multipleOf": { "width": 8, "height": 8 },
+      "dynamicResolution": false
+    }
+  },
+
+  "inputs": {
+    "required": [
+      { "kind": "color", "formats": ["r16g16b16a16_float"], "resolution": "same-as-color" },
+      { "kind": "depth", "formats": ["r32_float"], "resolution": "same-as-color" },
+      { "kind": "motionVectors", "formats": ["r16g16_float"], "resolution": "same-as-color" }
+    ],
+    "optional": [
+      { "kind": "exposure", "formats": ["r32_float"], "resolution": "arbitrary" },
+      { "kind": "mask", "formats": ["r8_unorm"], "resolution": "same-as-color", "synthesizable": true },
+      {
+        "kind": "uiMask",
+        "formats": ["r8_unorm"],
+        "resolution": "same-as-color",
+        "notes": "Strongly recommended. Without UI exclusion, HUD elements are processed by the model and shimmer."
+      }
+    ]
+  },
+
+  "conventions": {
+    "colorSpace": "scrgb",
+    "hdr": {
+      "supported": true,
+      "required": false,
+      "paperWhiteNits": 200,
+      "maxLuminanceNits": 1000
+    },
+    "depth": {
+      "direction": "inverse",
+      "range": "zero-to-one",
+      "linearity": "projective",
+      "infiniteFarPlane": true
+    },
+    "motionVectors": {
+      "space": "screen",
+      "units": "pixels",
+      "scale": { "x": 1.0, "y": 1.0 },
+      "includesJitter": false,
+      "direction": "current-to-previous"
+    },
+    "jitter": { "expected": true, "space": "pixels", "sequence": "halton-2-3" },
+    "camera": { "required": false, "matrixLayout": "row-major", "handedness": "left" }
+  },
+
+  "temporal": {
+    "stateful": true,
+    "historyFrames": 1,
+    "warmupFrames": 4,
+    "reset": {
+      "semantics": "soft",
+      "triggers": [
+        "session-start",
+        "source-change",
+        "seek",
+        "loop",
+        "resolution-change",
+        "format-change",
+        "color-space-change",
+        "scene-cut",
+        "resume-from-bypass"
+      ],
+      "requiresStableResolution": true
+    }
+  },
+
+  "output": {
+    "formats": ["r16g16b16a16_float"],
+    "scaling": { "mode": "same-size" },
+    "compositing": { "alpha": "opaque", "replacesSource": true, "requiresUiExclusion": true }
+  },
+
+  "performance": {
+    "vramEstimate": [
+      { "resolution": { "width": 1920, "height": 1080 }, "megabytes": 640 },
+      { "resolution": { "width": 2560, "height": 1440 }, "megabytes": 1100 },
+      { "resolution": { "width": 3840, "height": 2160 }, "megabytes": 2400 }
+    ],
+    "tiers": [
+      {
+        "name": "Quality",
+        "description": "Validated reference values from the 3840x2160 acceptance run.",
+        "targetFrameMs": 16.6,
+        "settings": { "NRIntensity": 2.0, "NRPreset": 0, "NRStyle": 0, "NRPerformanceMode": 3 }
+      },
+      {
+        "name": "Subtle",
+        "description": "Reduced intensity and structure for footage where the default reads as over-processed.",
+        "targetFrameMs": 16.6,
+        "settings": { "NRIntensity": 1.0, "NRLocalStructure": 1.0, "NRSkinStructure": 1.0 }
+      }
+    ]
+  },
+
+  "settings": [
+    {
+      "key": "NRIntensity",
+      "label": "Intensity",
+      "description": "Overall strength of the neural pass.",
+      "type": "float",
+      "default": 2.0,
+      "min": 0.0,
+      "max": 4.0,
+      "step": 0.1,
+      "safeRange": { "min": 0.0, "max": 3.0 },
+      "liveChangeable": true
+    },
+    {
+      "key": "NRStyle",
+      "label": "Style",
+      "type": "enum",
+      "default": 0,
+      "options": [
+        { "value": 0, "label": "Neutral" },
+        { "value": 1, "label": "Soft" },
+        { "value": 2, "label": "Detailed" },
+        { "value": 3, "label": "Sharp" }
+      ],
+      "liveChangeable": true
+    },
+    {
+      "key": "NRPreset",
+      "label": "Render preset",
+      "type": "enum",
+      "default": 0,
+      "options": [
+        { "value": 0, "label": "Preset A" },
+        { "value": 1, "label": "Preset B" },
+        { "value": 2, "label": "Preset C" },
+        { "value": 3, "label": "Preset D" }
+      ],
+      "liveChangeable": false
+    },
+    {
+      "key": "NRLocalTone",
+      "label": "Local tone",
+      "type": "float",
+      "default": 1.0,
+      "min": 0.0,
+      "max": 4.0,
+      "step": 0.1,
+      "safeRange": { "min": 0.0, "max": 3.0 },
+      "liveChangeable": true
+    },
+    {
+      "key": "NRLocalStructure",
+      "label": "Local structure",
+      "type": "float",
+      "default": 1.0,
+      "min": 0.0,
+      "max": 4.0,
+      "step": 0.1,
+      "safeRange": { "min": 0.0, "max": 3.0 },
+      "liveChangeable": true
+    },
+    {
+      "key": "NRGlobalTone",
+      "label": "Global tone",
+      "type": "float",
+      "default": 1.0,
+      "min": 0.0,
+      "max": 4.0,
+      "step": 0.1,
+      "safeRange": { "min": 0.0, "max": 3.0 },
+      "liveChangeable": true
+    },
+    {
+      "key": "NRSkinStructure",
+      "label": "Skin structure",
+      "description": "Separate structure strength for skin regions. High values read as artificial on faces.",
+      "type": "float",
+      "default": 1.0,
+      "min": 0.0,
+      "max": 4.0,
+      "step": 0.1,
+      "safeRange": { "min": 0.0, "max": 2.5 },
+      "liveChangeable": true
+    },
+    {
+      "key": "NRAutoMask",
+      "label": "Automatic mask",
+      "type": "bool",
+      "default": false,
+      "liveChangeable": true
+    },
+    {
+      "key": "NRPerformanceMode",
+      "label": "Performance mode",
+      "type": "enum",
+      "default": 3,
+      "options": [
+        { "value": 0, "label": "Mode 0" },
+        { "value": 1, "label": "Mode 1" },
+        { "value": 2, "label": "Mode 2" },
+        { "value": 3, "label": "Mode 3 (validated)" }
+      ],
+      "liveChangeable": false,
+      "advanced": true
+    }
+  ]
+}

@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+repo="$(cd "$(dirname "$0")/.."&&pwd)";root="${1:-$repo/build/fg_conv/macos-custom-block1-bot1/attempt-$(date -u +%Y%m%dT%H%M%SZ)}";[[ ! -e "$root" ]]||{ echo "Attempt exists" >&2;exit 2;};src="$repo/src/fg_conv";model="$repo/build/fg_default_readback/eval0-default-all-a5-a/runtime-default-buffers-post-evaluate-0";build="$root/build";mkdir -p "$build"
+xcrun -sdk macosx metal -std=metal3.1 -I "$src" -c "$src/custom_block1_bot1.metal" -o "$build/kernel.air";xcrun -sdk macosx metallib "$build/kernel.air" -o "$build/kernel.metallib";xcrun clang++ -std=c++20 -fobjc-arc -Wall -Wextra -Werror -Wno-unused-function "$src/macos_custom_block1_bot1_probe.mm" -framework Foundation -framework Metal -o "$build/host"
+for poison in a5 5a;do for ord in a b;do id="block1-bot1-poison-$poison-process-$ord";run="$root/$id";mkdir -p "$run";"$build/host" "$build/kernel.metallib" "$model/default-token-000202.bin" "$model/default-token-000204.bin" "$run" "$id" "$poison">"$run/stdout.log" 2>"$run/stderr.log";done;done
+python3 "$repo/scripts/verify-fg-custom-block1-bot1.py" backend --backend mac --root "$root" --output "$root/backend-receipt.json";echo "attempt_root=$root";echo result=pass

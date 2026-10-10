@@ -1,0 +1,56 @@
+# Runtime output
+*.log
+*.dmp
+*.pdb
+*.obj
+*.exp
+*.lib
+
+# Build and editor output
+build/
+/outputs/
+/work/
+# ...except the runtime bundle the loader reads. Its inputs were 1.4 GB of untracked
+# captures in two sibling repos, so without this the runtime could only ever be rebuilt
+# on one machine. Only the 532 files the loader actually opens are tracked (27 MB of the
+# 93 MB on disk); the experimental metallib variants stay out.
+# work/re9-sr-runtime-bundle/model/ is NVIDIA-derived and must be removed before any
+# public release - see docs/RUNTIME_BUNDLE.md.
+.vs/
+.vscode/
+__pycache__/
+*.pyc
+.DS_Store
+
+# Local game backups
+.neuralstudio-backups/
+re9-dlss5-arm.flag
+
+# menu-bar app build output
+build/netal-menubar/
+build/
+
+# Never add local model packages or signing credentials to new release work.
+*.p12
+*.pfx
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+/public-export/
+# Model/capture/runtime binaries are provisioned locally, never added to the public source tree.
+*.bin
+!runtime/arithmetic-calibration/rcp-correction-rom.bin
+!runtime/arithmetic-calibration/rsq-correction-rom.bin
+*.dll
+*.exe
+*.metallib
+*.dylib
+*.a
+*.so
+
+# Standalone FG scalar calibration, exact identities enforced by source policy.
+!runtime/fg-arithmetic-calibration/ex2-unit.bin
+!runtime/fg-arithmetic-calibration/ex2-fraction.bin
+!runtime/fg-arithmetic-calibration/sigmoid.bin

@@ -1,0 +1,279 @@
+// nr_body_runtime_v1.mm — execution core (see nr_body_runtime.h). Derived from the verified fused probe; kernels, dispatch order, poison,
+// coverage and hashing are unchanged; only the input side changed: live inputs arrive as caller buffers/textures, never as files.
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+#include "nr_body_runtime.h"
+#import <CommonCrypto/CommonDigest.h>
+#include <array>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <vector>
+#include <unistd.h>
+namespace fs = std::filesystem;
+static std::vector<uint8_t> Read(const fs::path& p) { std::ifstream s(p, std::ios::binary | std::ios::ate); if (!s) throw std::runtime_error("open failed: " + p.string()); const size_t n = size_t(s.tellg()); s.seekg(0); std::vector<uint8_t> v(n); s.read(reinterpret_cast<char*>(v.data()), std::streamsize(n)); return v; }
+static std::string Sha(const void* d, size_t n) { std::array<unsigned char, 32> h{}; CC_SHA256(d, CC_LONG(n), h.data()); std::ostringstream o; o << std::hex << std::setfill('0'); for (auto b : h) o << std::setw(2) << unsigned(b); return o.str(); }
+static std::string JStr(NSDictionary* d, const char* k) { NSString* v = d[[NSString stringWithUTF8String:k]]; return v ? std::string(v.UTF8String) : std::string(); }
+static long JInt(NSDictionary* d, const char* k) { NSNumber* v = d[[NSString stringWithUTF8String:k]]; return v ? v.longValue : 0; }
+struct SplitParams { int32_t shift_x, shift_y; uint32_t flags, tokens; }; enum : uint32_t { FLAG_RES_VIEW = 1, FLAG_OUT_VIEW = 2, FLAG_EMIT_F16 = 4, FLAG_IN_VIEW = 8 };
+struct VitParams { uint32_t tokens, block, stage, reserved; }; struct RepackParams { int width, height; uint32_t in_dwords, out_dwords; };
+constexpr size_t TIN = 2160u * 512u, VIEW = 16u * 69120u, POOLB = 640u * 512u, VITB = 640u * 1024u, T = 640;
+// Persistent context for serve mode: device, queue, libraries and pipelines survive across frames (the per-process fixed cost is paid once).
+static void require(bool ok, const char* what) { if (!ok) throw std::runtime_error(std::string("live input rejected: ") + what); }
+int nr_body_run_frame(NrBodyContext& ctx, NSDictionary* chain, const NrBodyFrameInputs& in, const char* diagnostics_dir, NrBodyResult& res) { @autoreleasepool { try {
+  const bool diag = diagnostics_dir && *diagnostics_dir; fs::path out = diag ? fs::path(diagnostics_dir) : fs::path(); if (diag) { if (fs::exists(out)) throw std::runtime_error("preserve previous run"); fs::create_directories(out); }
+  NSError* err = nil; if (!chain) throw std::runtime_error("descriptor missing");
+  const unsigned poison = in.poison; const fs::path tables = JStr(chain, "tables");
+  id<MTLDevice> dev = ctx.dev; id<MTLCommandQueue> queue = ctx.queue;
+  auto lib = [&](const std::string& p) { auto it = ctx.libs.find(p); if (it != ctx.libs.end()) return it->second; id<MTLLibrary> l = [dev newLibraryWithURL:[NSURL fileURLWithPath:[NSString stringWithUTF8String:p.c_str()]] error:&err]; if (!l) throw std::runtime_error(err.localizedDescription.UTF8String); ctx.libs[p] = l; return l; };
+  id<MTLLibrary> slib = lib(JStr(chain, "split_lib")), vlib = lib(JStr(chain, "vit_lib"));
+  const std::string tplib_path = JStr(chain, "vit_tp_lib"); id<MTLLibrary> tplib = tplib_path.empty() ? nil : lib(tplib_path);   // optional: three-product expand/contract/projection (bit-identical, faster)
+  const std::string sptp_path = JStr(chain, "split_tp_lib"); id<MTLLibrary> sptp = sptp_path.empty() ? nil : lib(sptp_path);   // optional: three-product split conv (all flag variants)
+  auto pso = [&](id<MTLLibrary> l, const char* name) { const std::string key = std::to_string(reinterpret_cast<uintptr_t>((__bridge void*)l)) + "|" + name; auto it = ctx.pipes.find(key); if (it != ctx.pipes.end()) return it->second; id<MTLComputePipelineState> ps = [dev newComputePipelineStateWithFunction:[l newFunctionWithName:[NSString stringWithUTF8String:name]] error:&err]; if (!ps) throw std::runtime_error(std::string(name) + ": " + err.localizedDescription.UTF8String); ctx.pipes[key] = ps; return ps; };
+  const size_t pool_bytes = size_t(JInt(chain, "pool_bytes")); id<MTLBuffer> pool = [dev newBufferWithLength:pool_bytes + 4096 options:MTLResourceStorageModeShared]; std::memset(pool.contents, poison, pool_bytes); std::memset(static_cast<uint8_t*>(pool.contents) + pool_bytes, 0, 4096);
+  require(in.entry.buffer != nil && in.entry.bytes == VIEW && in.entry.offset + VIEW <= in.entry.buffer.length, "encoder entry buffer/bytes/offset");
+  { const size_t off = size_t(JInt(chain, "entry_offset")); id<MTLCommandBuffer> c = [queue commandBuffer]; id<MTLBlitCommandEncoder> bl = [c blitCommandEncoder]; [bl copyFromBuffer:in.entry.buffer sourceOffset:in.entry.offset toBuffer:pool destinationOffset:off size:VIEW]; [bl endEncoding]; [c commit]; [c waitUntilCompleted]; if (c.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("entry copy failed"); }
+  auto upload = [&](const std::vector<uint8_t>& v) { id<MTLBuffer> b = [dev newBufferWithLength:v.size() + 16 options:MTLResourceStorageModeShared]; std::memcpy(b.contents, v.data(), v.size()); return b; };
+  auto scratch = [&](size_t n, uint8_t fill) { id<MTLBuffer> b = [dev newBufferWithLength:n + 16 options:MTLResourceStorageModeShared]; std::memset(b.contents, fill, n + 16); return b; };
+  id<MTLBuffer> rsq = upload(Read(tables / "rtx-rsqrt-half.bin")), rcp = upload(Read(tables / "rtx-rcp-half.bin"));
+  const size_t covmax = std::max(T * 4096 * 4, TIN * 4); id<MTLBuffer> cov = scratch(covmax, 0), cov2 = scratch(POOLB * 4, 0), y16 = scratch(TIN * 2, 0), qb = scratch(TIN, uint8_t(poison)), kb = scratch(TIN, uint8_t(poison)), vb = scratch(TIN, uint8_t(poison));
+  std::ostringstream js; js << "{\n \"schema\": \"neuralstudio.nr.body-runtime.v1\",\n \"pid\": " << getpid() << ",\n \"poison\": " << poison << ",\n \"launches\": [\n"; bool first = true; double gpu_total = 0; const auto t_all = [NSDate date];
+  auto cov_summary = [&](id<MTLBuffer> c, size_t bytes, size_t& once, size_t& multi, size_t& zero) { const uint32_t* p = static_cast<const uint32_t*>(c.contents); once = multi = zero = 0; for (size_t i = 0; i < bytes; ++i) { if (p[i] == 1) ++once; else if (p[i] > 1) ++multi; else ++zero; } };
+  auto record = [&](long n, const std::string& kind, id<MTLCommandBuffer> cmd, const std::vector<std::pair<std::string, std::string>>& outs, const std::string& covline, double wall_ms) {
+    const double gpu_ms = (cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0; gpu_total += gpu_ms;
+    js << (first ? "" : ",\n") << "  {\"launch\": " << n << ", \"kind\": \"" << kind << "\", \"gpu_ms\": " << gpu_ms << ", \"wall_ms\": " << wall_ms << ", \"outputs\": {"; bool f2 = true;
+    for (auto& o : outs) { js << (f2 ? "" : ", ") << "\"" << o.first << "\": \"" << o.second << "\""; f2 = false; }
+    js << "}" << covline << "}"; first = false; std::cout << "launch " << n << " " << kind << " gpu_ms " << gpu_ms << "\n";
+  };
+  auto pool_at = [&](size_t off) { return static_cast<uint8_t*>(pool.contents) + off; };
+  id<MTLBuffer> spw[3], spmax, spstats; if (sptp) { for (int m = 0; m < 3; ++m) spw[m] = scratch(16u * 32u * 512u * 2u, 0); spmax = scratch(16u * 512u, 0); spstats = scratch(64, 0); }
+  id<MTLBuffer> atk[3], atv[3], atkmax, atvmax; if (sptp) { for (int m = 0; m < 3; ++m) { atk[m] = scratch(40u * 16u * 32u * 64u * 2u, 0); atv[m] = scratch(40u * 16u * 2u * 32u * 32u * 2u, 0); } atkmax = scratch(40u * 16u * 64u, 0); atvmax = scratch(40u * 16u * 2u * 32u, 0); }   // split attend operands per (window, head)
+  id<MTLBuffer> qw[3], qwmax; if (sptp) { for (int m = 0; m < 3; ++m) qw[m] = scratch(16u * 32u * 1536u * 2u, 0); qwmax = scratch(16u * 1536u, 0); }   // split qkv weights: 16 steps x 1536 columns
+  id<MTLBuffer> fw2[3], fw3[3], fw2max, fw3max; if (sptp) { for (int m = 0; m < 3; ++m) { fw2[m] = scratch(8u * 2u * 32u * 256u * 2u, 0); fw3[m] = scratch(8u * 8u * 32u * 64u * 2u, 0); } fw2max = scratch(8u * 2u * 256u, 0); fw3max = scratch(8u * 8u * 64u, 0); }
+  // ---- split launches ----
+  auto run_split = [&](NSDictionary* L) {
+    const long n = JInt(L, "launch"); const std::string kernel = JStr(L, "kernel"); NSArray* shift = L[@"shift"]; NSDictionary* roles = L[@"roles"]; auto weights = upload(Read(JStr(L, "weights")));
+    auto off = [&](const char* role) { NSDictionary* r = roles[[NSString stringWithUTF8String:role]]; if (!r) throw std::runtime_error(std::to_string(n) + ": role " + role); return size_t(JInt(r, "pool_offset")); };
+    SplitParams prm{int32_t([shift[0] intValue]), int32_t([shift[1] intValue]), 0, 2160};
+    id<MTLCommandBuffer> cmd = [queue commandBuffer]; id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder]; [blit fillBuffer:cov range:NSMakeRange(0, covmax + 16) value:0]; [blit fillBuffer:cov2 range:NSMakeRange(0, POOLB * 4 + 16) value:0]; [blit endEncoding];
+    std::vector<std::pair<std::string, size_t>> outs;   // role -> (offset, bytes) recorded after
+    std::vector<std::pair<std::string, size_t>> outbytes;
+    auto dispatch = [&](const char* name, std::vector<std::pair<id<MTLBuffer>, size_t>> bufs, size_t threads) {
+      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(slib, name)];
+      for (size_t i = 0; i < bufs.size(); ++i) [enc setBuffer:bufs[i].first offset:bufs[i].second atIndex:i];
+      [enc setBytes:&prm length:sizeof(prm) atIndex:bufs.size()]; [enc dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding];
+    };
+    size_t o_off = 0, o_bytes = 0; std::string o_role;
+    if (kernel == "ffwd" || kernel == "ffwd_view") { const bool view = kernel == "ffwd_view"; prm.flags = view ? FLAG_IN_VIEW : 0; o_role = "out"; o_off = off("out"); o_bytes = TIN;
+      if (sptp) {
+        { id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_tp_prep")]; [enc setBuffer:weights offset:0 atIndex:0]; for (int m = 0; m < 3; ++m) [enc setBuffer:spw[m] offset:0 atIndex:1 + m]; [enc setBuffer:spmax offset:0 atIndex:4];
+          [enc dispatchThreads:MTLSizeMake(16u * 512u, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding]; }
+        { id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_ffwd_tp_prep")]; [enc setBuffer:weights offset:0 atIndex:0]; for (int m = 0; m < 3; ++m) [enc setBuffer:fw2[m] offset:0 atIndex:1 + m]; [enc setBuffer:fw2max offset:0 atIndex:4]; for (int m = 0; m < 3; ++m) [enc setBuffer:fw3[m] offset:0 atIndex:5 + m]; [enc setBuffer:fw3max offset:0 atIndex:8];
+          [enc dispatchThreads:MTLSizeMake(8u * 2u * 256u + 8u * 8u * 64u, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding]; }
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_ffwd_tp")];
+        [enc setBuffer:pool offset:off(view ? "x_view" : "x") atIndex:0]; [enc setBuffer:weights offset:0 atIndex:1]; [enc setBuffer:pool offset:o_off atIndex:2]; [enc setBuffer:cov offset:0 atIndex:3]; [enc setBytes:&prm length:sizeof(prm) atIndex:4];
+        for (int m = 0; m < 3; ++m) [enc setBuffer:spw[m] offset:0 atIndex:5 + m]; [enc setBuffer:spmax offset:0 atIndex:8]; for (int m = 0; m < 3; ++m) [enc setBuffer:fw2[m] offset:0 atIndex:9 + m]; [enc setBuffer:fw2max offset:0 atIndex:12]; for (int m = 0; m < 3; ++m) [enc setBuffer:fw3[m] offset:0 atIndex:13 + m]; [enc setBuffer:fw3max offset:0 atIndex:16]; [enc setBuffer:spstats offset:0 atIndex:17];
+        [enc dispatchThreadgroups:MTLSizeMake(8, 2160 / 16, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [enc endEncoding];
+      } else
+      dispatch("nr_split_ffwd", {{pool, off(view ? "x_view" : "x")}, {weights, 0}, {pool, o_off}, {cov, 0}}, 2160u * 8u); }
+    else if (kernel == "conv" || kernel == "conv_resview" || kernel == "conv_outview" || kernel == "conv_pool") {
+      const bool rv = kernel == "conv_resview", ov = kernel == "conv_outview", pl = kernel == "conv_pool"; prm.flags = (rv ? FLAG_RES_VIEW : 0) | (ov ? FLAG_OUT_VIEW : 0) | (pl ? FLAG_EMIT_F16 : 0);
+      o_role = ov ? "out_view" : "out"; o_off = off(o_role.c_str()); o_bytes = ov ? VIEW : TIN;
+      if (sptp) {
+        { id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_tp_prep")]; [enc setBuffer:weights offset:0 atIndex:0]; for (int m = 0; m < 3; ++m) [enc setBuffer:spw[m] offset:0 atIndex:1 + m]; [enc setBuffer:spmax offset:0 atIndex:4];
+          [enc dispatchThreads:MTLSizeMake(16u * 512u, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding]; }
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_conv_tp")];
+        [enc setBuffer:pool offset:off("x") atIndex:0]; [enc setBuffer:pool offset:off(rv ? "res_view" : "res") atIndex:1]; [enc setBuffer:weights offset:0 atIndex:2]; [enc setBuffer:pool offset:o_off atIndex:3]; [enc setBuffer:y16 offset:0 atIndex:4]; [enc setBuffer:cov offset:0 atIndex:5];
+        [enc setBytes:&prm length:sizeof(prm) atIndex:6]; for (int m = 0; m < 3; ++m) [enc setBuffer:spw[m] offset:0 atIndex:7 + m]; [enc setBuffer:spmax offset:0 atIndex:10]; [enc setBuffer:spstats offset:0 atIndex:11];
+        [enc dispatchThreadgroups:MTLSizeMake(8, 2160 / 16, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [enc endEncoding];
+      } else
+      dispatch("nr_split_conv", {{pool, off("x")}, {pool, off(rv ? "res_view" : "res")}, {weights, 0}, {pool, o_off}, {y16, 0}, {cov, 0}}, 2160u * 32u);
+      if (pl) { dispatch("nr_split_pool", {{y16, 0}, {pool, off("pooled")}, {cov2, 0}}, 640u * 32u); outbytes.push_back({"pooled", off("pooled")}); } }
+    else if (kernel == "qkv_attend") { o_role = "out"; o_off = off("out"); o_bytes = TIN;
+      if (sptp) {
+        struct SpPrepParams { uint32_t steps, cols, step_bytes, reserved; } pp{16u, 1536u, 49152u, 0u};
+        { id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_tp_prep_generic")]; [enc setBuffer:weights offset:0 atIndex:0]; for (int m = 0; m < 3; ++m) [enc setBuffer:qw[m] offset:0 atIndex:1 + m]; [enc setBuffer:qwmax offset:0 atIndex:4]; [enc setBytes:&pp length:sizeof(pp) atIndex:5];
+          [enc dispatchThreads:MTLSizeMake(16u * 1536u, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding]; }
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_qkv_tp")];
+        [enc setBuffer:pool offset:off("x") atIndex:0]; [enc setBuffer:weights offset:0 atIndex:1]; [enc setBuffer:qb offset:0 atIndex:2]; [enc setBuffer:kb offset:0 atIndex:3]; [enc setBuffer:vb offset:0 atIndex:4]; [enc setBuffer:rsq offset:0 atIndex:5]; [enc setBytes:&prm length:sizeof(prm) atIndex:6];
+        for (int m = 0; m < 3; ++m) [enc setBuffer:qw[m] offset:0 atIndex:7 + m]; [enc setBuffer:qwmax offset:0 atIndex:10]; [enc setBuffer:spstats offset:0 atIndex:11];
+        [enc dispatchThreadgroups:MTLSizeMake(16, 2160 / 16, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [enc endEncoding];
+        // windowed attention on the engine: per-(window, head) K^T / V operands from the live q/k/v, then the attention tile kernel
+        enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_attend_tp_prep")]; [enc setBuffer:kb offset:0 atIndex:0]; [enc setBuffer:vb offset:0 atIndex:1]; [enc setBytes:&prm length:sizeof(prm) atIndex:2];
+        for (int m = 0; m < 3; ++m) [enc setBuffer:atk[m] offset:0 atIndex:3 + m]; [enc setBuffer:atkmax offset:0 atIndex:6]; for (int m = 0; m < 3; ++m) [enc setBuffer:atv[m] offset:0 atIndex:7 + m]; [enc setBuffer:atvmax offset:0 atIndex:10];
+        [enc dispatchThreads:MTLSizeMake(40u * 16u * 64u + 40u * 16u * 2u * 32u, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding];
+        enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(sptp, "nr_split_attend_tp")];
+        [enc setBuffer:qb offset:0 atIndex:0]; [enc setBuffer:kb offset:0 atIndex:1]; [enc setBuffer:vb offset:0 atIndex:2]; [enc setBuffer:weights offset:0 atIndex:3]; [enc setBuffer:pool offset:o_off atIndex:4]; [enc setBuffer:cov offset:0 atIndex:5]; [enc setBuffer:rcp offset:0 atIndex:6]; [enc setBytes:&prm length:sizeof(prm) atIndex:7];
+        for (int m = 0; m < 3; ++m) [enc setBuffer:atk[m] offset:0 atIndex:8 + m]; [enc setBuffer:atkmax offset:0 atIndex:11]; for (int m = 0; m < 3; ++m) [enc setBuffer:atv[m] offset:0 atIndex:12 + m]; [enc setBuffer:atvmax offset:0 atIndex:15]; [enc setBuffer:spstats offset:0 atIndex:16];
+        [enc dispatchThreadgroups:MTLSizeMake(16, 40 * 4, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [enc endEncoding];
+      } else {
+      dispatch("nr_split_qkv", {{pool, off("x")}, {weights, 0}, {qb, 0}, {kb, 0}, {vb, 0}, {rsq, 0}}, 2160u * 16u);
+      dispatch("nr_split_attend", {{qb, 0}, {kb, 0}, {vb, 0}, {weights, 0}, {pool, o_off}, {cov, 0}, {rcp, 0}}, 40u * 16u * 64u); } }
+    else if (kernel == "final_head") { o_role = "out_vit"; o_off = off("out_vit"); o_bytes = VITB; dispatch("nr_split_final_head", {{pool, off("x_pooled")}, {weights, 0}, {pool, o_off}, {cov, 0}}, 640u * 64u); }
+    else if (kernel == "dec_upsample") { o_role = "out"; o_off = off("out"); o_bytes = TIN; dispatch("nr_split_dec_upsample", {{pool, off("x_vit")}, {pool, off("res")}, {weights, 0}, {pool, o_off}, {cov, 0}}, 2160u * 32u); }
+    else throw std::runtime_error("unknown kernel " + kernel);
+    const auto t0 = [NSDate date]; [cmd commit]; [cmd waitUntilCompleted]; if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("command buffer failed at launch " + std::to_string(n));
+    const double wall_ms = -[t0 timeIntervalSinceNow] * 1000.0;
+    size_t once, multi, zero; cov_summary(cov, o_bytes, once, multi, zero); std::ostringstream cl; cl << ", \"coverage\": {\"" << o_role << "\": [" << once << ", " << multi << ", " << zero << "]";
+    std::vector<std::pair<std::string, std::string>> hashes{{o_role, Sha(pool_at(o_off), o_bytes)}};
+    for (auto& ob : outbytes) { size_t o1, m1, z1; cov_summary(cov2, POOLB, o1, m1, z1); cl << ", \"" << ob.first << "\": [" << o1 << ", " << m1 << ", " << z1 << "]"; hashes.push_back({ob.first, Sha(pool_at(ob.second), POOLB)}); }
+    cl << "}"; record(n, kernel, cmd, hashes, cl.str(), wall_ms);
+  };
+  for (NSDictionary* L in chain[@"split_a"]) run_split(L);
+  // ---- repack 58 (single direction, live input: the final-head output with padding tokens zeroed by the driver's rule) ----
+  NSDictionary* R = chain[@"vit"]; const size_t vit_in_off = size_t(JInt(R, "final_head_offset"));
+  std::vector<uint8_t> vit_in(720896, 0); std::memcpy(vit_in.data(), pool_at(vit_in_off), VITB);
+  { NSArray* pad = R[@"padding_tokens"]; for (NSNumber* t in pad) { const unsigned tok = t.unsignedIntValue; for (unsigned c = 0; c < 1024; ++c) { const unsigned tile = tok / 16, slot = tok % 16, lane = 4 * (slot % 8) + (c % 16) / 4, reg = (slot % 16) / 8 + 2 * ((c % 32) / 16); vit_in[tile * 16384 + (c / 32) * 512 + lane * 16 + reg * 4 + c % 4] = 0; } } }
+  id<MTLBuffer> vin = upload(vit_in), tok = scratch(VITB, uint8_t(poison)), rcov = scratch(VITB * 4, 0);
+  auto run_repack = [&](const char* name, long n, id<MTLBuffer> in, size_t in_bytes, id<MTLBuffer> outb, size_t out_off, size_t out_bytes) {
+    RepackParams prm{20, 32, uint32_t(in_bytes / 4), uint32_t(out_bytes / 4)}; id<MTLCommandBuffer> cmd = [queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder]; [blit fillBuffer:rcov range:NSMakeRange(0, VITB * 4 + 16) value:0]; [blit endEncoding];
+    id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(vlib, name)]; [enc setBuffer:in offset:0 atIndex:0]; [enc setBuffer:outb offset:out_off atIndex:1]; [enc setBuffer:rcov offset:0 atIndex:2]; [enc setBytes:&prm length:sizeof(prm) atIndex:3];
+    [enc dispatchThreadgroups:MTLSizeMake(640, 1, 1) threadsPerThreadgroup:MTLSizeMake(256, 1, 1)]; [enc endEncoding];
+    const auto t0 = [NSDate date]; [cmd commit]; [cmd waitUntilCompleted]; if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("repack failed");
+    const uint32_t* c = static_cast<const uint32_t*>(rcov.contents); size_t once = 0, multi = 0, zero = 0; for (size_t i = 0; i < out_bytes / 4; ++i) { if (c[i] == 1) ++once; else if (c[i] > 1) ++multi; else ++zero; }
+    std::ostringstream cl; cl << ", \"coverage_dwords\": [" << once << ", " << multi << ", " << zero << "]";
+    record(n, name, cmd, {{name, Sha(static_cast<uint8_t*>(outb.contents) + out_off, out_bytes)}}, cl.str(), -[t0 timeIntervalSinceNow] * 1000.0);
+  };
+  run_repack("nr_vit_repack_2d_to_1d", 58, vin, 720896, tok, 0, VITB);
+  // ---- ViT blocks 31-38, resident intermediates ----
+  id<MTLBuffer> expand = scratch(T * 4096, uint8_t(poison)), contract = scratch(T * 1024, uint8_t(poison)), q = scratch(T * 1024, uint8_t(poison)), k = scratch(T * 1024, uint8_t(poison)), v = scratch(T * 1024, uint8_t(poison)), attention = scratch(T * 1024, uint8_t(poison)), projection = scratch(T * 1024, uint8_t(poison));
+  id<MTLBuffer> covE = scratch(T * 4096 * 4, 0), covC = scratch(T * 1024 * 4, 0), covQ = scratch(T * 1024 * 4, 0), covK = scratch(T * 1024 * 4, 0), covV = scratch(T * 1024 * 4, 0), covA = scratch(T * 1024 * 4, 0), covP = scratch(T * 1024 * 4, 0);
+  id<MTLBuffer> tokens = tok;
+  // three-product weight preparation buffers (l/h/l+h halves and per-(step, column) max class), reused per block
+  struct TpPrepParams { uint32_t steps, cols, step_bytes, reserved; };
+  id<MTLBuffer> tpw[3][3], tpmax[3], tpstats = scratch(64, 0); const uint32_t tp_steps[3] = {32u, 128u, 32u}, tp_cols[3] = {4096u, 1024u, 1024u}, tp_stepb[3] = {131072u, 32768u, 32768u};
+  if (tplib) for (int st = 0; st < 3; ++st) { const size_t WH = size_t(tp_steps[st]) * 32u * tp_cols[st]; for (int m = 0; m < 3; ++m) tpw[st][m] = scratch(WH * 2u, 0); tpmax[st] = scratch(size_t(tp_steps[st]) * tp_cols[st], 0); }
+  id<MTLBuffer> tqw[3], tqmax; if (tplib) { for (int m = 0; m < 3; ++m) tqw[m] = scratch(32u * 32u * 3072u * 2u, 0); tqmax = scratch(32u * 3072u, 0); }   // qkv weights (blob at +128): 32 steps x 3072 columns
+  id<MTLBuffer> tak[3], tav[3], takmax, tavmax; if (tplib) { for (int m = 0; m < 3; ++m) { tak[m] = scratch(32u * 32u * 640u * 2u, 0); tav[m] = scratch(32u * 20u * 32u * 32u * 2u, 0); } takmax = scratch(32u * 640u, 0); tavmax = scratch(32u * 20u * 32u, 0); }   // attention operands per block: K^T and V as l/h/l+h halves + max classes
+  for (NSDictionary* B in R[@"blocks"]) {
+    const long block = JInt(B, "block"); auto W0 = upload(Read(JStr(B, "w0"))), W1 = upload(Read(JStr(B, "w1"))), W2 = upload(Read(JStr(B, "w2"))), W4 = upload(Read(JStr(B, "w4")));
+    VitParams prm{uint32_t(T), uint32_t(block), 0, 0}; id<MTLCommandBuffer> cmd = [queue commandBuffer];
+    id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder]; for (id<MTLBuffer> c : {covE, covC, covQ, covK, covV, covA, covP}) [blit fillBuffer:c range:NSMakeRange(0, c.length) value:0]; [blit endEncoding];
+    auto dispatch = [&](const char* name, std::vector<id<MTLBuffer>> bufs, size_t threads, uint32_t stage) {
+      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(vlib, name)];
+      for (size_t i = 0; i < bufs.size(); ++i) [enc setBuffer:bufs[i] offset:0 atIndex:i];
+      prm.stage = stage; [enc setBytes:&prm length:sizeof(prm) atIndex:bufs.size()]; [enc dispatchThreads:MTLSizeMake(threads, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding];
+    };
+    if (tplib) {
+      auto prep = [&](int st, id<MTLBuffer> W) { TpPrepParams pp{tp_steps[st], tp_cols[st], tp_stepb[st], 0u}; id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(tplib, "nr_vit_tp_prep")];
+        [enc setBuffer:W offset:0 atIndex:0]; for (int m = 0; m < 3; ++m) [enc setBuffer:tpw[st][m] offset:0 atIndex:1 + m]; [enc setBuffer:tpmax[st] offset:0 atIndex:4]; [enc setBytes:&pp length:sizeof(pp) atIndex:5];
+        [enc dispatchThreads:MTLSizeMake(size_t(tp_steps[st]) * tp_cols[st], 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding]; };
+      auto tpdispatch = [&](const char* name, int st, std::vector<id<MTLBuffer>> bufs, uint32_t stage) {   // bufs: the accepted kernel's buffers; then params, wl, wh, wlh, maxcls, stats
+        id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(tplib, name)];
+        for (size_t i = 0; i < bufs.size(); ++i) [enc setBuffer:bufs[i] offset:0 atIndex:i];
+        prm.stage = stage; [enc setBytes:&prm length:sizeof(prm) atIndex:bufs.size()]; for (int m = 0; m < 3; ++m) [enc setBuffer:tpw[st][m] offset:0 atIndex:bufs.size() + 1 + m]; [enc setBuffer:tpmax[st] offset:0 atIndex:bufs.size() + 4]; [enc setBuffer:tpstats offset:0 atIndex:bufs.size() + 5];
+        [enc dispatchThreadgroups:MTLSizeMake(tp_cols[st] / 64, T / 16, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [enc endEncoding]; };
+      prep(0, W0); tpdispatch("nr_vit_expand_tp", 0, {tokens, W0, expand, covE}, 1); prep(1, W1); tpdispatch("nr_vit_contract_tp", 1, {expand, tokens, W1, contract, covC}, 2);
+      { TpPrepParams pp{32u, 3072u, 98304u, 0u}; id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(tplib, "nr_vit_tp_prep")];
+        [enc setBuffer:W2 offset:128 atIndex:0]; for (int m = 0; m < 3; ++m) [enc setBuffer:tqw[m] offset:0 atIndex:1 + m]; [enc setBuffer:tqmax offset:0 atIndex:4]; [enc setBytes:&pp length:sizeof(pp) atIndex:5];
+        [enc dispatchThreads:MTLSizeMake(32u * 3072u, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding];
+        enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(tplib, "nr_vit_qkv_tp")]; std::vector<id<MTLBuffer>> qb{contract, W2, q, k, v, covQ, covK, covV, rsq};
+        for (size_t i = 0; i < qb.size(); ++i) [enc setBuffer:qb[i] offset:0 atIndex:i]; prm.stage = 3; [enc setBytes:&prm length:sizeof(prm) atIndex:9]; for (int m = 0; m < 3; ++m) [enc setBuffer:tqw[m] offset:0 atIndex:10 + m]; [enc setBuffer:tqmax offset:0 atIndex:13]; [enc setBuffer:tpstats offset:0 atIndex:14];
+        [enc dispatchThreadgroups:MTLSizeMake(32, T / 16, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [enc endEncoding]; }
+      { id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(tplib, "nr_vit_attn_prep")]; [enc setBuffer:k offset:0 atIndex:0]; [enc setBuffer:v offset:0 atIndex:1];
+        for (int m = 0; m < 3; ++m) [enc setBuffer:tak[m] offset:0 atIndex:2 + m]; [enc setBuffer:takmax offset:0 atIndex:5]; for (int m = 0; m < 3; ++m) [enc setBuffer:tav[m] offset:0 atIndex:6 + m]; [enc setBuffer:tavmax offset:0 atIndex:9];
+        [enc dispatchThreads:MTLSizeMake(32u * 640u + 32u * 20u * 32u, 1, 1) threadsPerThreadgroup:MTLSizeMake(64, 1, 1)]; [enc endEncoding];
+        enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:pso(tplib, "nr_vit_attention_tp")]; std::vector<id<MTLBuffer>> abf{q, k, v, attention, covA, rcp};
+        for (size_t i = 0; i < abf.size(); ++i) [enc setBuffer:abf[i] offset:0 atIndex:i]; prm.stage = 4; [enc setBytes:&prm length:sizeof(prm) atIndex:6];
+        for (int m = 0; m < 3; ++m) [enc setBuffer:tak[m] offset:0 atIndex:7 + m]; [enc setBuffer:takmax offset:0 atIndex:10]; for (int m = 0; m < 3; ++m) [enc setBuffer:tav[m] offset:0 atIndex:11 + m]; [enc setBuffer:tavmax offset:0 atIndex:14]; [enc setBuffer:tpstats offset:0 atIndex:15];
+        [enc dispatchThreadgroups:MTLSizeMake(32, T / 16, 1) threadsPerThreadgroup:MTLSizeMake(32, 1, 1)]; [enc endEncoding]; }
+      prep(2, W4); tpdispatch("nr_vit_projection_tp", 2, {attention, contract, W4, projection, covP}, 5);
+    } else {
+    dispatch("nr_vit_expand", {tokens, W0, expand, covE}, T * 256, 1); dispatch("nr_vit_contract", {expand, tokens, W1, contract, covC}, T * 64, 2);
+    dispatch("nr_vit_qkv", {contract, W2, q, k, v, covQ, covK, covV, rsq}, T * 32, 3); dispatch("nr_vit_attention", {q, k, v, attention, covA, rcp}, T * 32, 4); dispatch("nr_vit_projection", {attention, contract, W4, projection, covP}, T * 64, 5);
+    }
+    const auto t0 = [NSDate date]; [cmd commit]; [cmd waitUntilCompleted]; if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("vit block failed");
+    std::ostringstream cl; cl << ", \"coverage\": {"; bool f3 = true;
+    for (auto& pr : std::vector<std::pair<const char*, std::pair<id<MTLBuffer>, size_t>>>{{"expand", {covE, T * 4096}}, {"contract", {covC, T * 1024}}, {"q", {covQ, T * 1024}}, {"k", {covK, T * 1024}}, {"v", {covV, T * 1024}}, {"attention", {covA, T * 1024}}, {"projection", {covP, T * 1024}}}) { size_t o1, m1, z1; cov_summary(pr.second.first, pr.second.second, o1, m1, z1); cl << (f3 ? "" : ", ") << "\"" << pr.first << "\": [" << o1 << ", " << m1 << ", " << z1 << "]"; f3 = false; }
+    cl << "}";
+    record(block, "vit_block", cmd, {{"expand", Sha(expand.contents, T * 4096)}, {"contract", Sha(contract.contents, T * 1024)}, {"q", Sha(q.contents, T * 1024)}, {"k", Sha(k.contents, T * 1024)}, {"v", Sha(v.contents, T * 1024)}, {"attention", Sha(attention.contents, T * 1024)}, {"projection", Sha(projection.contents, T * 1024)}}, cl.str(), -[t0 timeIntervalSinceNow] * 1000.0);
+    std::swap(tokens, projection); if (tokens == tok) {} // next block reads this block's projection; the freed buffer becomes the next projection target
+    if (projection == tok) { projection = scratch(T * 1024, uint8_t(poison)); }
+  }
+  // ---- repack 99 -> pool (launch 100 input), then split launches 100-132 ----
+  run_repack("nr_vit_repack_1d_to_2d", 99, tokens, VITB, pool, size_t(JInt(R, "repack99_out_offset")), VITB);
+  for (NSDictionary* L in chain[@"split_b"]) run_split(L);
+  { const size_t fo = size_t(JInt(chain, "final_offset")); res.middle_view_sha256 = Sha(pool_at(fo), VIEW); if (diag) std::ofstream(out / "out_view_132.bin", std::ios::binary).write(reinterpret_cast<const char*>(pool_at(fo)), VIEW); }
+  const double middle_wall_ms = -[t_all timeIntervalSinceNow] * 1000.0; const double middle_gpu_ms = gpu_total; std::string tail_fields;
+  // ---- optional fused decoder/output section (launches 133-156, transliterated PTX kernels) on the same resident pool ----
+  if (NSDictionary* D = chain[@"decoder"]) {
+    const auto t_dec = [NSDate date];
+    // restage to the strict decoder pre-image: keep this run's middle view, poison everything else, apply the live-producer patches, control words
+    const size_t fo = size_t(JInt(chain, "final_offset")); std::vector<uint8_t> mid(VIEW); std::memcpy(mid.data(), pool_at(fo), VIEW);
+    std::memset(pool.contents, poison, pool_bytes); std::memcpy(pool_at(fo), mid.data(), VIEW);
+    { NSArray* patches = D[@"patches"]; require(patches && patches.count == 5, "descriptor patch table (4 skips + Block0 skip)");
+      const NrBodyRegion* regs[5] = {&in.skips[0], &in.skips[1], &in.skips[2], &in.skips[3], &in.block0_skip}; id<MTLCommandBuffer> c = [queue commandBuffer]; id<MTLBlitCommandEncoder> bl = [c blitCommandEncoder];
+      for (unsigned i = 0; i < 5; ++i) { NSDictionary* P = patches[i]; const size_t off = size_t(JInt(P, "offset")), bytes = size_t(JInt(P, "bytes")); const NrBodyRegion& r = *regs[i];
+        require(r.buffer != nil && r.bytes == bytes && r.offset + bytes <= r.buffer.length && off + bytes <= pool_bytes, JStr(P, "file").c_str());
+        [bl copyFromBuffer:r.buffer sourceOffset:r.offset toBuffer:pool destinationOffset:off size:bytes]; }
+      [bl endEncoding]; [c commit]; [c waitUntilCompleted]; if (c.status != MTLCommandBufferStatusCompleted) throw std::runtime_error("skip copy failed"); }
+    { NSArray* c = D[@"control"]; const size_t c0 = [c[0] unsignedLongValue], c1 = [c[1] unsignedLongValue]; std::memset(pool_at(c0), 0xff, c1 - c0); }
+    const std::string pre_sha = Sha(pool.contents, pool_bytes);
+    const bool final_only = in.production; const fs::path dtables = JStr(D, "tables");
+    const unsigned tw = unsigned(JInt(D, "tex_w")), th = unsigned(JInt(D, "tex_h")); require(in.input_color != nil && in.input_color.pixelFormat == MTLPixelFormatRGBA16Float && in.input_color.width == tw && in.input_color.height == th, "input colour texture (RGBA16F WxH)");
+    std::vector<uint8_t> texin(size_t(tw) * th * 8); [in.input_color getBytes:texin.data() bytesPerRow:tw * 8 fromRegion:MTLRegionMake2D(0, 0, tw, th) mipmapLevel:0];
+    auto opt = [&](const char* name) { fs::path f = dtables / name; std::vector<uint8_t> v = fs::exists(f) ? Read(f) : std::vector<uint8_t>(16, 0); return upload(v); };
+    id<MTLBuffer> bpool = pool, brsq = opt("rtx-rsqrt-half.bin"), brcp = opt("rtx-rcp-half.bin"), brom = opt("sm120-rcp-correction-rom.bin"), bex2u = opt("unit-corrections.bin"), bex2f = opt("fraction-corrections.bin");
+    id<MTLBuffer> bcov = [dev newBufferWithLength:pool_bytes + 4096 options:MTLResourceStorageModeShared]; id<MTLBuffer> btexcov = [dev newBufferWithLength:size_t(tw) * th * 4 + 16 options:MTLResourceStorageModeShared];
+    std::vector<uint8_t> dbgz(64 * 32 * 4, 0); id<MTLBuffer> bdbg = upload(dbgz);
+    MTLTextureDescriptor* dIn = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float width:tw height:th mipmapped:NO]; dIn.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite; dIn.storageMode = MTLStorageModeShared;
+    if (in.output_surface) require(in.output_surface.pixelFormat == MTLPixelFormatRGBA16Float && in.output_surface.width == tw && in.output_surface.height == th, "output surface (RGBA16F WxH)");
+    id<MTLTexture> tex[3] = {in.input_color, [dev newTextureWithDescriptor:dIn], in.output_surface ? in.output_surface : [dev newTextureWithDescriptor:dIn]};
+    std::vector<uint8_t> tpoison(size_t(tw) * th * 8, uint8_t(poison)); for (int i = 1; i < 3; ++i) [tex[i] replaceRegion:MTLRegionMake2D(0, 0, tw, th) mipmapLevel:0 withBytes:tpoison.data() bytesPerRow:tw * 8];
+    const std::string texin_sha = Sha(texin.data(), texin.size()); res.input_texture_sha256_before = texin_sha;
+    std::map<std::string, id<MTLLibrary>> dlibs; std::map<std::string, id<MTLComputePipelineState>> dpipes;
+    for (NSDictionary* L in D[@"launches"]) {
+      const unsigned n = unsigned(JInt(L, "launch")); const std::string libp = JStr(L, "lib"), kernel = JStr(L, "kernel"); auto params = Read(JStr(L, "params")), weights = Read(JStr(L, "weights"));
+      NSArray* g = L[@"grid"]; NSArray* b = L[@"block"]; const std::string texmode = JStr(L, "textures");
+      if (!dlibs.count(libp)) dlibs[libp] = lib(libp);
+      const std::string pk = libp + "|" + kernel;
+      if (!dpipes.count(pk)) { dpipes[pk] = [dev newComputePipelineStateWithFunction:[dlibs[libp] newFunctionWithName:[NSString stringWithUTF8String:kernel.c_str()]] error:&err]; if (!dpipes[pk]) throw std::runtime_error(kernel + ": " + err.localizedDescription.UTF8String); }
+      id<MTLBuffer> bw = [dev newBufferWithLength:weights.size() + 4096 options:MTLResourceStorageModeShared]; std::memset(bw.contents, 0, weights.size() + 4096); std::memcpy(bw.contents, weights.data(), weights.size());
+      id<MTLBuffer> bprm = [dev newBufferWithLength:params.size() + 64 options:MTLResourceStorageModeShared]; std::memset(bprm.contents, 0, params.size() + 64); std::memcpy(bprm.contents, params.data(), params.size());
+      if (n == 155u) { require(params.size() >= 104, "post block parameter block"); for (size_t i = 88; i < 104; ++i) require(params[i] == 0, "temporal inputs present (launch 155 params +88/+96): unsupported path"); }   // see docs/NR_INPUT_CONTRACT.md
+      const std::string w_sha = Sha(weights.data(), weights.size()), p_sha = Sha(params.data(), params.size());
+      const auto t0 = [NSDate date]; id<MTLCommandBuffer> cmd = [queue commandBuffer];
+      id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder]; [blit fillBuffer:bcov range:NSMakeRange(0, pool_bytes + 4096) value:0]; if (!texmode.empty()) [blit fillBuffer:btexcov range:NSMakeRange(0, size_t(tw) * th * 4 + 16) value:0]; [blit endEncoding];
+      id<MTLComputeCommandEncoder> enc = [cmd computeCommandEncoder]; [enc setComputePipelineState:dpipes[pk]];
+      [enc setBuffer:bpool offset:0 atIndex:0]; [enc setBuffer:bw offset:0 atIndex:1]; [enc setBuffer:bprm offset:0 atIndex:2]; [enc setBuffer:brsq offset:0 atIndex:3]; [enc setBuffer:brcp offset:0 atIndex:4]; [enc setBuffer:bdbg offset:0 atIndex:5]; [enc setBuffer:bcov offset:0 atIndex:6];
+      [enc setBuffer:brom offset:0 atIndex:7]; [enc setBuffer:bex2u offset:0 atIndex:8]; [enc setBuffer:bex2f offset:0 atIndex:9]; [enc setBuffer:btexcov offset:0 atIndex:10];
+      if (texmode == "post") { [enc setTexture:tex[0] atIndex:0]; [enc setTexture:tex[1] atIndex:1]; } else if (texmode == "copy") { [enc setTexture:tex[1] atIndex:0]; [enc setTexture:tex[2] atIndex:1]; }
+      [enc dispatchThreadgroups:MTLSizeMake([g[0] unsignedIntValue], [g[1] unsignedIntValue], [g[2] unsignedIntValue]) threadsPerThreadgroup:MTLSizeMake([b[0] unsignedIntValue], [b[1] unsignedIntValue], [b[2] unsignedIntValue])]; [enc endEncoding];
+      [cmd commit]; [cmd waitUntilCompleted]; if (cmd.status != MTLCommandBufferStatusCompleted) throw std::runtime_error(cmd.error ? cmd.error.localizedDescription.UTF8String : "command buffer failed");
+      const double gpu_ms = (cmd.GPUEndTime - cmd.GPUStartTime) * 1000.0, wall_ms = -[t0 timeIntervalSinceNow] * 1000.0; gpu_total += gpu_ms;
+      const uint32_t* cv = static_cast<const uint32_t*>(bcov.contents); size_t once = 0, multi = 0; if (!final_only) for (size_t i = 0; i < pool_bytes / 4; ++i) { if (cv[i] == 1) ++once; else if (cv[i] > 1) ++multi; }
+      std::string tex_line;
+      if (!texmode.empty()) {
+        const uint32_t* tc = static_cast<const uint32_t*>(btexcov.contents); size_t t1 = 0, tm = 0; for (size_t i = 0; i < size_t(tw) * th; ++i) { if (tc[i] == 1) ++t1; else if (tc[i] > 1) ++tm; }
+        std::vector<uint8_t> o(size_t(tw) * th * 8); id<MTLTexture> to = tex[texmode == "post" ? 1 : 2]; [to getBytes:o.data() bytesPerRow:tw * 8 fromRegion:MTLRegionMake2D(0, 0, tw, th) mipmapLevel:0];
+        if (diag) std::ofstream(out / ("tex_out_" + std::to_string(n) + ".bin"), std::ios::binary).write(reinterpret_cast<const char*>(o.data()), std::streamsize(o.size()));
+        if (texmode == "copy") { res.final_surface_sha256 = Sha(o.data(), o.size()); res.final_pixels = size_t(tw) * th; res.final_pixels_not_written = size_t(tw) * th - t1 - tm; res.final_pixels_written_more_than_once = tm; }
+        std::vector<uint8_t> back(size_t(tw) * th * 8); [tex[texmode == "post" ? 0 : 1] getBytes:back.data() bytesPerRow:tw * 8 fromRegion:MTLRegionMake2D(0, 0, tw, th) mipmapLevel:0];
+        if (texmode == "post") { res.input_texture_sha256_after = Sha(back.data(), back.size()); res.input_texture_immutable = res.input_texture_sha256_after == texin_sha; }
+        std::ostringstream ts; ts << ", \"texture\": {\"pixels_once\": " << t1 << ", \"pixels_multi\": " << tm << ", \"pixels\": " << size_t(tw) * th << ", \"output_sha256\": \"" << Sha(o.data(), o.size()) << "\", \"input_after_sha256\": \"" << Sha(back.data(), back.size()) << "\"}"; tex_line = ts.str();
+      }
+      const std::string pool_sha = final_only ? std::string("skipped") : Sha(pool.contents, pool_bytes);
+      const bool w_ok = Sha(bw.contents, weights.size()) == w_sha, p_ok = Sha(bprm.contents, params.size()) == p_sha;
+      js << (first ? "" : ",\n") << "  {\"launch\": " << n << ", \"kind\": \"ptx\", \"kernel\": \"" << kernel << "\", \"gpu_ms\": " << gpu_ms << ", \"wall_ms\": " << wall_ms << ", \"pool_post_sha256\": \"" << pool_sha << "\", \"words_written_once\": " << (final_only ? std::string("null") : std::to_string(once)) << ", \"words_written_more_than_once\": " << (final_only ? std::string("null") : std::to_string(multi))
+         << ", \"weights_immutable\": " << (w_ok ? "true" : "false") << ", \"params_immutable\": " << (p_ok ? "true" : "false") << ", \"weights_sha256\": \"" << w_sha << "\"" << tex_line << "}"; first = false;
+      std::cout << "launch " << n << " ptx gpu_ms " << gpu_ms << " wall_ms " << wall_ms << "\n";
+    }
+    std::ostringstream tf; tf << ",\n \"decoder\": {\"checks\": \"" << (final_only ? "final" : "per-launch") << "\", \"pool_pre_sha256\": \"" << pre_sha << "\", \"pool_final_sha256\": \"" << Sha(pool.contents, pool_bytes) << "\", \"texture_in_sha256\": \"" << texin_sha << "\", \"gpu_ms\": " << (gpu_total - middle_gpu_ms) << ", \"wall_ms\": " << (-[t_dec timeIntervalSinceNow] * 1000.0) << "}";
+    // production (final-only checks): the final pool hash above is the evidence; the 212 MB pool dump is skipped unless the chain asks for it
+    res.decoder_pre_image_sha256 = pre_sha; res.pool_final_sha256 = Sha(pool.contents, pool_bytes); res.decoder_gpu_ms = gpu_total - middle_gpu_ms; if (final_only) { res.checks_skipped = {"decoder per-launch pool hash", "decoder per-launch pool coverage scan"}; }
+    if (diag && (!final_only || JStr(D, "write_pool_post") == "true")) std::ofstream(out / "pool_post.bin", std::ios::binary).write(static_cast<const char*>(pool.contents), std::streamsize(pool_bytes));
+    tail_fields = tf.str();
+  }
+  const double wall_total = -[t_all timeIntervalSinceNow] * 1000.0;
+  js << "\n ],\n \"middle_gpu_ms\": " << middle_gpu_ms << ",\n \"middle_wall_ms\": " << middle_wall_ms << tail_fields << ",\n \"gpu_ms_total\": " << gpu_total << ",\n \"wall_ms_total\": " << wall_total << "\n}\n";
+  if (diag) std::ofstream(out / "chain-run.json") << js.str();
+  res.middle_gpu_ms = middle_gpu_ms; res.wall_ms = wall_total; res.code = 0; res.error.clear(); return 0;
+} catch (const std::exception& e) { res.code = 2; res.error = e.what(); return 2; } } }
+

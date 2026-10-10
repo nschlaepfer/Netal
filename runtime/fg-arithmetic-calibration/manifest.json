@@ -1,0 +1,88 @@
+{
+  "schema": "netal.fg.scalar-calibration.v1",
+  "classification": "standalone measured arithmetic; not model buffers or compiled code",
+  "model_inputs": 0,
+  "profiles": {
+    "ex2-unit.bin": {
+      "bytes": 4194305,
+      "sha256": "60c2ae1a0869ce6f10ba093a33def68ecdbf4ba0d789cd186289586b63b9f234"
+    },
+    "ex2-fraction.bin": {
+      "bytes": 2097153,
+      "sha256": "76bacb1adf8e53accdd6a40a64940c073f001e091232e9119b155f2ab25f1a13"
+    },
+    "sigmoid.bin": {
+      "bytes": 262144,
+      "sha256": "394394a5258bad437495d68076be75d8413fa0ed5b752400e3947c332437b850"
+    }
+  },
+  "native_baselines": {
+    "unit": {
+      "records": 16777217,
+      "bytes": 67108868,
+      "sha256": "41e853d34dfea8d2fc3a75e1ab8c2790f526bed3c1f1ccd1b0df3be3eb22a381"
+    },
+    "fraction": {
+      "records": 8388609,
+      "bytes": 33554436,
+      "sha256": "b8f55ae73000851d89fd0bcc14e4178f353598bb48f2634cd919794e5258e092"
+    }
+  },
+  "domains": {
+    "unit": "-i * 2^-24, i=0..16777216",
+    "fraction": "-2 + i * 2^-23, i=0..8388608",
+    "sigmoid": "all 65536 half bit patterns through the recorded scalar instruction chain"
+  },
+  "historical_origin": [
+    {
+      "table": "unit",
+      "original_source": "src/fg_math_ex2/rtx_unit_quantization_probe.cu",
+      "original_source_sha256": "870a0d91fd82beefa2aad93324367b5b08c05b15779a69c9c59042ddec2f0895",
+      "historical_receipt_sha256": "e48b312648b1a1fc3f41bff8003350a454b7bbf1751c022789e07d0655754ac9",
+      "raw_table_sha256": "40088ff59b58c4018114b4a2dd1fb5b124488b91e7cad79bdf3bf143bf267b75",
+      "raw_table_bytes": 67108868,
+      "gpu": "NVIDIA GeForce RTX 5090, 616.56, 32607, 12.0",
+      "cuda_toolkit": "Build cuda_13.3.r13.3/compiler.38244171_0",
+      "historical_repeat_reported_equal": true,
+      "second_raw_copy_retained_and_checked": false
+    },
+    {
+      "table": "fraction",
+      "original_source": "src/fg_math_ex2/rtx_fraction_probe.cu",
+      "original_source_sha256": "ccfcdca812f30e26ca2b1462e5b6dbb111a141163ebb766c80a11b3d2478f4d8",
+      "historical_receipt_sha256": "bd0e7d4c329a23828cd36682a2e91532f20928e8d980c19457d36bbce95bab8c",
+      "raw_table_sha256": "f7cfb2fd9df97ae01bc747b866e4928a79311e8443700f938859f43772f73d86",
+      "raw_table_bytes": 33554436,
+      "gpu": "NVIDIA GeForce RTX 5090, 616.56, 32607, 12.0",
+      "cuda_toolkit": "Build cuda_13.3.r13.3/compiler.38244171_0",
+      "historical_repeat_reported_equal": true,
+      "second_raw_copy_retained_and_checked": false
+    },
+    {
+      "table": "sigmoid",
+      "original_source": "src/fg_postprocess_l84/rtx_sigmoid_probe.cu",
+      "original_source_sha256": "70e799a778779e20ac772c2b795e6a4286e1114538c4be8c89d59a7d8a545145",
+      "historical_receipt_sha256": "9ffbbda7c7473d290c2074cff0254b8ceab1bda214412e09eb777baa4803b487",
+      "raw_table_sha256": "394394a5258bad437495d68076be75d8413fa0ed5b752400e3947c332437b850",
+      "raw_table_bytes": 262144,
+      "gpu": "NVIDIA GeForce RTX 5090, 616.56, 32607, 12.0",
+      "cuda_toolkit": "Build cuda_13.3.r13.3/compiler.38244171_0",
+      "historical_repeat_reported_equal": true,
+      "second_raw_copy_retained_and_checked": true
+    }
+  ],
+  "compact_recipe": "two-bit code = native fast::exp2 bits - NVIDIA EX2 bits + 1; four codes per byte, low index first",
+  "fresh_native_repacking": {
+    "process_count": 2,
+    "poison_bytes": [
+      165,
+      90
+    ],
+    "all_compact_bytes_reproduced": true,
+    "model_inputs": 0
+  },
+  "standalone_regenerator": "tools/math-calibration/fg-scalar-tables.cu",
+  "standalone_regenerator_compiled_or_executed": false,
+  "redistribution_clearance": false,
+  "gameplay_validation": false
+}

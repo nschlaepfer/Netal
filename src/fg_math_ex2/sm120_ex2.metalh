@@ -1,0 +1,38 @@
+#pragma once
+
+#include <metal_stdlib>
+
+namespace neuralstudio_fg_math {
+
+// Exact sm_120 ex2.approx.ftz.f32 reconstruction for finite x <= 0.
+// The tables contain instruction outputs, not model/frame outputs.  The unit
+// table covers -i*2^-24 for i in [0,2^24]; the fraction table covers
+// -2+i*2^-23 for i in [0,2^23].
+inline float sm120_ex2_nonpositive(
+    float value,
+    device const uint* unit_table,
+    device const uint* fraction_table) {
+  const uint bits = as_type<uint>(value);
+  const uint exponent = (bits >> 23u) & 0xffu;
+  if (value == 0.0f || exponent <= 103u) {
+    return 1.0f;
+  }
+  if (exponent <= 126u) {
+    const uint raw_index = uint((-value) * 16777216.0f);
+    const uint index = metal::min(raw_index, 16777216u);
+    return as_type<float>(unit_table[index]);
+  }
+  if (value < -126.0f) {
+    return 0.0f;
+  }
+  const float integral = metal::floor(value);
+  const int binary_scale = int(integral) + 2;
+  const float normalized = value - float(binary_scale);
+  const uint raw_index = uint((normalized + 2.0f) * 8388608.0f);
+  const uint index = metal::min(raw_index, 8388608u);
+  const uint base_bits = fraction_table[index];
+  const int scaled_bits = int(base_bits) + binary_scale * 0x00800000;
+  return as_type<float>(uint(scaled_bits));
+}
+
+}  // namespace neuralstudio_fg_math

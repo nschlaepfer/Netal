@@ -1,0 +1,11 @@
+#pragma once
+
+// Force-include this header when compiling an accepted convolution source.
+// It keeps the original helper available for differential builds while
+// redirecting call sites to the semantically identical CLZ implementation.
+#define fg_hmma_f16_bits_16 fg_hmma_f16_bits_16_loop_reference
+#include "../fg_conv/hmma_exact.metalh"
+#undef fg_hmma_f16_bits_16
+
+#include "hmma_exact_clz.metalh"
+#define fg_hmma_f16_bits_16 fg_hmma_f16_bits_16_clz

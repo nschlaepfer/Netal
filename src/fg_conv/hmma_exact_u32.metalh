@@ -1,0 +1,58 @@
+#pragma once
+#include <metal_stdlib>
+using namespace metal;
+// hmma_exact.metalh with the 64-bit accumulation replaced by two unsigned 32-bit sign buckets. Range: each
+// aligned product numerator is (sigA*sigB*8)<<2 <= 32*2047^2 < 2^27 and the prior's is < 2^26, so
+// 16 products plus the prior sum to at most 2,212,463,104 < 2^32 per bucket (the buckets are magnitudes,
+// so neither wraps; INT32_MAX would). Same rule, same rounding, same bits as the oracle - verified
+// against it on random and edge vectors by hmma_u32_test.metal.
+inline uint fgu_round_shift_rne(uint value, uint shift) {
+  if (shift == 0u) return value;
+  if (shift >= 32u) return 0u;
+  const uint quotient = value >> shift, remainder = value & ((1u << shift) - 1u), halfway = 1u << (shift - 1u);
+  return quotient + uint(remainder > halfway || (remainder == halfway && (quotient & 1u) != 0u));
+}
+inline half fgu_fixed_to_half_rne(uint magnitude, bool negative, int scale) {
+  if (magnitude == 0u) return as_type<half>(ushort(0u));
+  const uint leading = 31u - clz(magnitude);
+  int exponent = int(leading) + scale;
+  uint significand, result;
+  if (exponent >= -14) {
+    const int shift = int(leading) - 10;
+    significand = shift > 0 ? fgu_round_shift_rne(magnitude, uint(shift)) : (magnitude << uint(-shift));
+    if (significand >= 2048u) { significand >>= 1u; ++exponent; }
+    result = exponent > 15 ? 0x7c00u : ((uint(exponent + 15) << 10u) | (significand - 1024u));
+  } else {
+    const int shift = -(scale + 24);
+    significand = shift > 0 ? fgu_round_shift_rne(magnitude, uint(shift)) : (magnitude << uint(-shift));
+    result = significand >= 1024u ? 0x0400u : significand;
+  }
+  if (negative) result |= 0x8000u;
+  if (result == 0x8000u) result = 0u;   // RTX HMMA: a result that rounds to zero is +0 (matches the runtime's post-stage rule)
+  return as_type<half>(ushort(result));
+}
+inline half fgu_hmma_f16_bits_16(thread const ushort* a_values, thread const ushort* b_values, half prior) {
+  uint sig[16]; int ex[16]; uint negmask = 0u; int max_exp = -21;
+  for (uint i = 0u; i < 16u; ++i) {
+    const ushort ab = a_values[i], bb = b_values[i];
+    const uint af = (uint(ab) >> 10u) & 31u, bf = (uint(bb) >> 10u) & 31u;
+    uint am = uint(ab) & 1023u, bm = uint(bb) & 1023u; if (af != 0u) am += 1024u; if (bf != 0u) bm += 1024u;
+    sig[i] = am * bm * 8u; ex[i] = (af == 0u ? -14 : int(af) - 15) + (bf == 0u ? -14 : int(bf) - 15);
+    negmask |= (((uint(ab) ^ uint(bb)) >> 15u) & 1u) << i;
+    if (sig[i] != 0u) max_exp = max(max_exp, ex[i]);
+  }
+  const ushort cb = as_type<ushort>(prior); const uint cf = (uint(cb) >> 10u) & 31u, cfr = uint(cb) & 1023u;
+  uint csig = 0u; int cex = -1024;
+  if (cf != 0u) { csig = (1024u + cfr) << 13u; cex = int(cf) - 15; }
+  else if (cfr != 0u) { const uint leading = 31u - clz(cfr); csig = cfr << (23u - leading); cex = int(leading) - 24; }
+  if (csig != 0u) max_exp = max(max_exp, cex);
+  uint pos = 0u, neg = 0u;
+  for (uint i = 0u; i < 16u; ++i) {
+    const int shift = max_exp - ex[i];
+    const uint aligned = shift > 31 ? 0u : (sig[i] << 2u) >> uint(shift);
+    if ((negmask >> i) & 1u) neg += aligned; else pos += aligned;
+  }
+  if (csig != 0u) { const int shift = max_exp - cex; const uint aligned = shift > 31 ? 0u : (csig << 2u) >> uint(shift); if (cb & 0x8000u) neg += aligned; else pos += aligned; }
+  const bool negative = pos < neg;
+  return fgu_fixed_to_half_rne(negative ? neg - pos : pos - neg, negative, max_exp - 25);
+}

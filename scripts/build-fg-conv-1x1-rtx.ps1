@@ -1,0 +1,79 @@
+[CmdletBinding()]
+param(
+    [Parameter(Mandatory = $true)] [string]$JobRoot,
+    [Parameter(Mandatory = $true)] [string]$AttemptId,
+    [string[]]$Layers = @('l22','l30','l31','l34','l35','l38','l39','l42','l43','l46','l47','l50','l51'),
+    [string]$RepositoryRoot
+)
+
+$ErrorActionPreference = 'Stop'
+if (-not $RepositoryRoot) { $RepositoryRoot = Split-Path -Parent $PSScriptRoot }
+$RepositoryRoot = [IO.Path]::GetFullPath($RepositoryRoot)
+$JobRoot = [IO.Path]::GetFullPath($JobRoot)
+$attemptRoot = Join-Path $JobRoot (Join-Path 'output' $AttemptId)
+if (Test-Path -LiteralPath $attemptRoot) { throw "Attempt exists: $attemptRoot" }
+$source = Join-Path $RepositoryRoot 'src\fg_conv\rtx_1x1_oracle.cpp'
+$baseSource = Join-Path $RepositoryRoot 'src\fg_conv\rtx_oracle.cpp'
+$contract = Join-Path $RepositoryRoot 'src\fg_conv\conv_1x1_contract.h'
+$verifier = Join-Path $RepositoryRoot 'scripts\verify-fg-conv-1x1-family.py'
+$manifest = Join-Path $JobRoot 'inputs\runtime-default-buffers-post-evaluate-0.manifest.json'
+foreach ($required in @($source,$baseSource,$contract,$verifier,$manifest)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing input: $required" }
+}
+if ((Get-FileHash $manifest -Algorithm SHA256).Hash -ne '2A1179D4A25BE030F772CD90CA7D017ED6EAC9291917F7D43EA9B0CD5AC6A294') { throw 'Manifest hash mismatch' }
+$metadata = @{
+    l22=@(30,65); l30=@(34,73); l31=@(35,75); l34=@(38,77); l35=@(39,79)
+    l38=@(42,81); l39=@(42,83); l42=@(43,85); l43=@(44,87); l46=@(47,89)
+    l47=@(48,91); l50=@(51,93); l51=@(52,95)
+}
+foreach ($layerId in $Layers) {
+    if (-not $metadata.ContainsKey($layerId)) { throw "Unknown layer: $layerId" }
+}
+$cudaPath = $env:CUDA_PATH
+if (-not $cudaPath) { $cudaPath = 'C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.3' }
+$vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer\vswhere.exe'
+$installation = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+$vcvars = Join-Path $installation 'VC\Auxiliary\Build\vcvars64.bat'
+$buildRoot = Join-Path $attemptRoot 'build'; New-Item -ItemType Directory -Path $buildRoot | Out-Null
+$binary = Join-Path $buildRoot 'fg-conv-1x1-rtx.exe'; $object = Join-Path $buildRoot 'fg-conv-1x1-rtx.obj'; $compileLog = Join-Path $buildRoot 'compile.log'
+$compileCommand = '"{0}" >nul && cl.exe /nologo /std:c++20 /EHsc /MD /W4 /WX /permissive- /Zc:__cplusplus /utf-8 /I"{1}" /Fo"{2}" /c "{3}" >"{4}" 2>&1 && link.exe /nologo /OUT:"{5}" "{2}" "{6}" bcrypt.lib >>"{4}" 2>&1' -f $vcvars, (Join-Path $cudaPath 'include'), $object, $source, $compileLog, $binary, (Join-Path $cudaPath 'lib\x64\cuda.lib')
+& $env:ComSpec /d /s /c $compileCommand
+if ($LASTEXITCODE -ne 0) { throw "Build failed; see $compileLog" }
+
+$layerReceipts = @()
+foreach ($layerId in $Layers) {
+    $moduleToken = [int]$metadata[$layerId][0]; $weightToken = [int]$metadata[$layerId][1]
+    $module = Join-Path $JobRoot ('inputs\cu-module-{0:D6}.bin' -f $moduleToken)
+    $weights = Join-Path $JobRoot ('inputs\default-token-{0:D6}-post-eval0.bin' -f $weightToken)
+    foreach ($required in @($module,$weights)) { if (-not (Test-Path -LiteralPath $required -PathType Leaf)) { throw "Missing layer input: $required" } }
+    $layerRoot = Join-Path $attemptRoot $layerId; New-Item -ItemType Directory -Path $layerRoot | Out-Null
+    foreach ($poison in @('a5','5a')) {
+        foreach ($ordinal in @('a','b')) {
+            $runId = "$layerId-poison-$poison-process-$ordinal"; $runRoot = Join-Path $layerRoot $runId; New-Item -ItemType Directory -Path $runRoot | Out-Null
+            $process = Start-Process -FilePath $binary -ArgumentList @($layerId,$module,$weights,$runRoot,$runId,$poison) -NoNewWindow -Wait -PassThru -RedirectStandardOutput (Join-Path $runRoot 'stdout.log') -RedirectStandardError (Join-Path $runRoot 'stderr.log')
+            if ($process.ExitCode -ne 0) { throw "Run failed: $runId" }
+        }
+    }
+    $backendReceipt = Join-Path $layerRoot 'backend-receipt.json'
+    & python $verifier backend --backend rtx --layer $layerId --root $layerRoot --output $backendReceipt
+    if ($LASTEXITCODE -ne 0) { throw "Verification failed: $layerId" }
+    $layerReceipt = Get-Content $backendReceipt -Raw | ConvertFrom-Json
+    $layerReceipts += [ordered]@{layer_id=$layerId; receipt_root_sha256=$layerReceipt.receipt_root_sha256; output_sha256=$layerReceipt.output_sha256}
+}
+$receipt = [ordered]@{
+    schema='neuralstudio.fg.conv-1x1-rig.v1'; job_id=(Split-Path -Leaf $JobRoot); attempt_id=$AttemptId
+    gpu=(& nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader,nounits | Select-Object -First 1).Trim()
+    cuda_toolkit=(& (Join-Path $cudaPath 'bin\nvcc.exe') --version | Select-Object -Last 1).Trim()
+    manifest_sha256=(Get-FileHash $manifest -Algorithm SHA256).Hash.ToLowerInvariant()
+    source_sha256=(Get-FileHash $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    base_source_sha256=(Get-FileHash $baseSource -Algorithm SHA256).Hash.ToLowerInvariant()
+    contract_sha256=(Get-FileHash $contract -Algorithm SHA256).Hash.ToLowerInvariant()
+    verifier_sha256=(Get-FileHash $verifier -Algorithm SHA256).Hash.ToLowerInvariant()
+    binary_sha256=(Get-FileHash $binary -Algorithm SHA256).Hash.ToLowerInvariant()
+    layers=$layerReceipts; layer_count=$layerReceipts.Count; fresh_process_count=4*$layerReceipts.Count
+    every_layer_independently_executed=$true; address_fields_recorded=$false; result='pass'
+}
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false); $receiptPath = Join-Path $attemptRoot 'rig-receipt.json'
+[IO.File]::WriteAllText($receiptPath,(($receipt | ConvertTo-Json -Depth 8)+"`n"),$utf8NoBom)
+$receiptHash=(Get-FileHash $receiptPath -Algorithm SHA256).Hash.ToLowerInvariant(); [IO.File]::WriteAllText((Join-Path $attemptRoot 'rig-receipt.sha256'),($receiptHash+"  rig-receipt.json`n"),$utf8NoBom)
+Write-Host "attempt_root=$attemptRoot"; Write-Host "rig_receipt_sha256=$receiptHash"; Write-Host 'result=pass'

@@ -1,0 +1,21 @@
+name: Feature proposal
+description: Propose a focused capability or workflow improvement.
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: User problem
+      description: Explain the use case and current limitation.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior and alternatives
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: How could this be validated?
+      description: Hardware, permitted inputs, success criteria and known tradeoffs. Do not attach proprietary assets.

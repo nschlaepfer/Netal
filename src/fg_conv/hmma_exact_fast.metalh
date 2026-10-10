@@ -1,0 +1,112 @@
+#pragma once
+#include <metal_stdlib>
+// Repair-side copy of hmma_exact.metalh: same arithmetic, leading-bit loops replaced by clz. The oracle
+// header stays as the definition of truth; harnesses compare this against it.
+
+using namespace metal;
+
+inline ulong fgf_round_shift_rne(ulong value, uint shift) {
+  if (shift == 0u) return value;
+  if (shift >= 64u) return 0ul;
+  const ulong quotient = value >> shift;
+  const ulong remainder = value & ((1ul << shift) - 1ul);
+  const ulong halfway = 1ul << (shift - 1u);
+  return quotient +
+         ulong(remainder > halfway ||
+               (remainder == halfway && (quotient & 1ul) != 0ul));
+}
+
+inline half fgf_fixed_to_half_rne(long value, int scale) {
+  if (value == 0l) return as_type<half>(ushort(0u));
+  const bool negative = value < 0l;
+  const ulong magnitude = negative ? ulong(-value) : ulong(value);
+  const uint leading = 63u - uint(clz(magnitude));
+  int exponent = int(leading) + scale;
+  ulong significand = 0ul;
+  uint result = 0u;
+  if (exponent >= -14) {
+    const int shift = int(leading) - 10;
+    significand = shift > 0 ? fgf_round_shift_rne(magnitude, uint(shift))
+                            : magnitude << uint(-shift);
+    if (significand >= 2048ul) {
+      significand >>= 1u;
+      ++exponent;
+    }
+    if (exponent > 15) {
+      result = 0x7c00u;
+    } else {
+      result = (uint(exponent + 15) << 10u) |
+               (uint(significand) - 1024u);
+    }
+  } else {
+    const int shift = -(scale + 24);
+    significand = shift > 0 ? fgf_round_shift_rne(magnitude, uint(shift))
+                            : magnitude << uint(-shift);
+    result = significand >= 1024ul ? 0x0400u : uint(significand);
+  }
+  if (negative) result |= 0x8000u;
+  if (result == 0x8000u) result = 0u;   // RTX HMMA: a result that rounds to zero is +0 (matches the runtime's post-stage rule)
+  return as_type<half>(ushort(result));
+}
+
+// Scalar numerical contract of one Blackwell HMMA.16816.F16 output element.
+inline half fgf_hmma_f16_bits_16(thread const ushort* a_values,
+                                thread const ushort* b_values,
+                                half prior) {
+  uint product_significands[16];
+  int product_exponents[16];
+  bool product_negative[16];
+  int maximum_exponent = -21;
+  for (uint inner = 0u; inner < 16u; ++inner) {
+    const ushort a_bits = a_values[inner];
+    const ushort b_bits = b_values[inner];
+    const uint a_field = (uint(a_bits) >> 10u) & 31u;
+    const uint b_field = (uint(b_bits) >> 10u) & 31u;
+    uint a_mantissa = uint(a_bits) & 1023u;
+    uint b_mantissa = uint(b_bits) & 1023u;
+    if (a_field != 0u) a_mantissa += 1024u;
+    if (b_field != 0u) b_mantissa += 1024u;
+    const int a_exponent = a_field == 0u ? -14 : int(a_field) - 15;
+    const int b_exponent = b_field == 0u ? -14 : int(b_field) - 15;
+    product_significands[inner] = a_mantissa * b_mantissa * 8u;
+    product_exponents[inner] = a_exponent + b_exponent;
+    product_negative[inner] = ((a_bits ^ b_bits) & 0x8000u) != 0u;
+    if (product_significands[inner] != 0u) {
+      maximum_exponent = max(maximum_exponent, product_exponents[inner]);
+    }
+  }
+
+  const ushort c_bits = as_type<ushort>(prior);
+  const uint c_field = (uint(c_bits) >> 10u) & 31u;
+  const uint c_fraction = uint(c_bits) & 1023u;
+  uint c_significand = 0u;
+  int c_exponent = -1024;
+  if (c_field != 0u) {
+    c_significand = (1024u + c_fraction) << 13u;
+    c_exponent = int(c_field) - 15;
+  } else if (c_fraction != 0u) {
+    const uint leading = 31u - clz(c_fraction);
+    c_significand = c_fraction << (23u - leading);
+    c_exponent = int(leading) - 24;
+  }
+  if (c_significand != 0u) {
+    maximum_exponent = max(maximum_exponent, c_exponent);
+  }
+
+  long total = 0l;
+  for (uint inner = 0u; inner < 16u; ++inner) {
+    const int shift = maximum_exponent - product_exponents[inner];
+    const uint aligned = shift > 31
+        ? 0u
+        : (product_significands[inner] << 2u) >> uint(shift);
+    total += product_negative[inner] ? -long(aligned) : long(aligned);
+  }
+  if (c_significand != 0u) {
+    const int shift = maximum_exponent - c_exponent;
+    const uint aligned = shift > 31
+        ? 0u
+        : (c_significand << 2u) >> uint(shift);
+    total += (c_bits & 0x8000u) != 0u ? -long(aligned) : long(aligned);
+  }
+  return fgf_fixed_to_half_rne(total, maximum_exponent - 25);
+}

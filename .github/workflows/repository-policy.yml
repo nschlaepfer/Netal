@@ -1,0 +1,36 @@
+name: Repository policy
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+permissions:
+  contents: read
+concurrency:
+  group: repository-policy-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+jobs:
+  repository-policy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out proposed content
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: candidate
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check out trusted policy
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: policy
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
+      - name: Test policy boundaries
+        run: python3 policy/scripts/test-contribution-content.py
+      - name: Inspect changed blobs with trusted policy
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: python3 policy/scripts/check-contribution-content.py --repo candidate --base "$BASE_SHA" --head "$HEAD_SHA"

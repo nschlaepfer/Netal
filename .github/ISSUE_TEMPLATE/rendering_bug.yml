@@ -1,0 +1,46 @@
+name: Rendering or game integration bug
+description: Report SR, FG, temporal, pacing, or game-adapter failures with reproducible context.
+body:
+  - type: markdown
+    attributes:
+      value: "Search existing issues first. Do not attach DLLs, weights, game data, raw model captures, credentials, or unredacted personal information."
+  - type: input
+    id: revision
+    attributes:
+      label: Netal revision
+      description: Commit SHA or release tag.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Hardware and software
+      description: Mac chip/memory, macOS, game/build, CrossOver and D3DMetal/GPTK version, if applicable.
+    validations:
+      required: true
+  - type: textarea
+    id: configuration
+    attributes:
+      label: Feature and model configuration
+      description: SR/FG/NR, native neural or window-capture backend, Fast/Reference, DLL version and SHA-256, source/output size, HDR, and nondefault settings. Do not upload the DLL.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction and expected versus actual behavior
+      description: Steps, frequency, first failing revision if known, and whether it also occurs without Netal.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence
+      description: Prefer synthetic reproductions. Identify generated versus displayed frame counts and timing scope. Review logs and images for personal details before attaching.
+  - type: checkboxes
+    id: data
+    attributes:
+      label: Data review
+      options:
+        - label: I checked attachments for personal data, secrets, model data and game assets.
+          required: true

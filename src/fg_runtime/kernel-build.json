@@ -1,0 +1,309 @@
+{
+  "schema": "netal.fg.kernel-build.v1",
+  "profile": "640x360",
+  "hmma": "u32",
+  "ex2": "compact",
+  "live_zero": true,
+  "kernels": [
+    {
+      "name": "l3_l13",
+      "source": "src/fg_early_l3_l13/early_l3_l13.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l4_l14",
+      "source": "src/fg_early_l4_l14/early_l4_l14.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l5_l15",
+      "source": "src/fg_early_l5_l15/early_l5_l15.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l6_l16",
+      "source": "src/fg_early_l6_l16/early_l6_l16.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l7_l17",
+      "source": "src/fg_early_l7_l17/early_l7_l17.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l8_l18",
+      "source": "src/fg_early_l8_l18/early_l8_l18.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l9",
+      "source": "src/fg_early_l9/early_l9.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l10_l12",
+      "source": "src/fg_early_status_l10_l12/status_write.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l11",
+      "source": "src/fg_early_l11/early_l11.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "l19",
+      "source": "src/fg_early_l19/early_l19.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "conv_3x3",
+      "source": "$conv3_source",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "conv_1x1",
+      "source": "src/fg_production_contract_l3_l87/conv_1x1_temporal.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "pooling",
+      "source": "src/fg_pooling/pooling.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "upscale-prefix",
+      "source": "src/fg_upscale/upscale.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "elementwise",
+      "source": "src/fg_elementwise/elementwise_family.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "mid_l52",
+      "source": "$l52_source",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "mid_l53",
+      "source": "src/fg_mid_l53/mid_l53.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "mid_l54",
+      "source": "$l54_source",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "mid_l55",
+      "source": "src/fg_mid_l55/fg_mid_l55.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "initial_merge",
+      "source": "src/fg_initial_merge/initial_merge.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "conv_pre",
+      "source": "src/fg_conv/custom_conv_pre.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "conv0",
+      "source": "src/fg_conv/custom_conv0_c8.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "conv1",
+      "source": "src/fg_conv/custom_conv1.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "conv2",
+      "source": "src/fg_conv/custom_conv2.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "bot0",
+      "source": "$bot0_source",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "bot1",
+      "source": "src/fg_production_contract_l3_l87/connected_block0_bot1_production.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "upsample",
+      "source": "src/fg_custom_upsample/custom_upsample.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "central",
+      "source": "src/fg_central_block/central_block.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "block1_conv0",
+      "source": "src/fg_conv/custom_block1_conv0.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "block1_conv1",
+      "source": "src/fg_conv/custom_block1_conv1.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "block1_conv2",
+      "source": "src/fg_conv/custom_block1_conv2.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "block1_bot0",
+      "source": "src/fg_connected_custom_l56_l83/connected_block1_bot0.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "block1_bot1",
+      "source": "src/fg_connected_custom_l56_l83/connected_block1_bot1.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "postprocess_l84",
+      "source": "src/fg_postprocess_l84/postprocess_l84.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "postprocess_l85",
+      "source": "src/fg_postprocess_l85/postprocess_l85.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "postprocess_l86",
+      "source": "src/fg_postprocess_l86/postprocess_l86_mode0.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "compositor_l87",
+      "source": "src/fg_compositor_l87/compositor_l87.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "compact_suspects",
+      "source": "src/fg_conv/compact_suspects.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "compact_ordered",
+      "source": "src/fg_conv/compact_ordered.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "compact_ordered_ind",
+      "source": "src/fg_conv/compact_ordered_ind.metal",
+      "metal_standard": "metal3.2"
+    },
+    {
+      "name": "connected_upsamples",
+      "source": "src/fg_conv/connected_upsamples.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "upsample3",
+      "source": "src/fg_custom_upsample/custom_upsample_planes3.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_conv_pre",
+      "source": "src/fg_conv/custom_conv_pre_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_conv0",
+      "source": "src/fg_conv/custom_conv0_c8_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_conv1",
+      "source": "src/fg_conv/custom_conv1_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_conv2b",
+      "source": "src/fg_conv/custom_conv2_bounded_v13.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_conv2r",
+      "source": "src/fg_conv/custom_conv2_repair_v6.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_conv2r8",
+      "source": "src/fg_conv/custom_conv2_repair_v8.metal",
+      "metal_standard": "metal3.2"
+    },
+    {
+      "name": "p_bot0",
+      "source": "src/fg_conv/custom_bot0_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b0bot1",
+      "source": "src/fg_conv/custom_block0_bot1_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b1conv0",
+      "source": "src/fg_conv/custom_block1_conv0_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b1conv1",
+      "source": "src/fg_conv/custom_block1_conv1_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b1conv2b",
+      "source": "src/fg_conv/custom_block1_conv2_bounded_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b1conv2r",
+      "source": "src/fg_conv/custom_block1_conv2_repair_ind.metal",
+      "metal_standard": "metal3.2"
+    },
+    {
+      "name": "p_b1bot0",
+      "source": "src/fg_conv/custom_block1_bot0_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b1bot1",
+      "source": "src/fg_conv/custom_block1_bot1_pipeline_wq.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_bot0_fu",
+      "source": "src/fg_conv/custom_bot0_pipeline_fu.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b0bot1_fu",
+      "source": "src/fg_conv/custom_block0_bot1_pipeline_fu.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b1bot0_fu",
+      "source": "src/fg_conv/custom_block1_bot0_pipeline_fu.metal",
+      "metal_standard": "metal3.1"
+    },
+    {
+      "name": "p_b1bot1_fu",
+      "source": "src/fg_conv/custom_block1_bot1_pipeline_fu.metal",
+      "metal_standard": "metal3.1"
+    }
+  ]
+}
