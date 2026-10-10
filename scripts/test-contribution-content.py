@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import hashlib
+import base64
 
 spec=importlib.util.spec_from_file_location('guard',Path(__file__).with_name('check-contribution-content.py'))
 guard=importlib.util.module_from_spec(spec);spec.loader.exec_module(guard)
@@ -51,5 +52,16 @@ class ContentTests(unittest.TestCase):
         from public_source_policy import content_findings
         p=Path(__file__).with_name('check-contribution-content.py')
         self.assertEqual(content_findings(p.read_bytes()),[])
+    def test_showcase_gif_is_a_bounded_named_exception(self):
+        from public_source_policy import SHOWCASE_GIF_PATH, allowed, content_findings
+        data=base64.b64decode('R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7')
+        self.assertTrue(allowed(SHOWCASE_GIF_PATH))
+        self.assertFalse(allowed('docs/brand/arbitrary.gif'))
+        self.assertEqual(self.inspect(SHOWCASE_GIF_PATH,data)['status'],'pass')
+        self.assertEqual(content_findings(data,relative=SHOWCASE_GIF_PATH),[])
+        self.assertEqual(self.inspect('docs/brand/arbitrary.gif',data)['status'],'fail')
+        for invalid in (data[:-1],b'not an image',data[:6]+b'\xff\xff'+data[8:]):
+            self.assertEqual(self.inspect(SHOWCASE_GIF_PATH,invalid)['status'],'fail')
+            self.assertEqual(content_findings(invalid,relative=SHOWCASE_GIF_PATH),['invalid-showcase-gif'])
 
 if __name__=='__main__':unittest.main()

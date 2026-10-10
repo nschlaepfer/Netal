@@ -12,6 +12,7 @@ import re
 import subprocess
 from netal_sr_calibration import BINARY_FILES as SR_CALIBRATION
 from netal_fg_calibration import BINARY_FILES as FG_CALIBRATION
+from public_source_policy import SHOWCASE_GIF_PATH, valid_showcase_gif
 
 CALIBRATION = {**SR_CALIBRATION, **FG_CALIBRATION}
 
@@ -80,6 +81,9 @@ def check(repo, base, head):
                 reasons.append('lfs-payload-requires-separate-review')
             if calibration is not None:
                 pass  # Only five pinned, model-independent measured scalar assets.
+            elif path == SHOWCASE_GIF_PATH:
+                if not valid_showcase_gif(data):
+                    reasons.append('invalid-showcase-gif')
             elif p.suffix.lower() == '.png':
                 if not data.startswith(b'\x89PNG\r\n\x1a\n'):
                     reasons.append('invalid-png-header')
