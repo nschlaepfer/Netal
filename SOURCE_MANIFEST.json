@@ -106,8 +106,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 5601,
-      "sha256": "b23665138fa48136195299c02faca59038c34fb46fe35b2f81375836c3e587e8",
+      "bytes": 6947,
+      "sha256": "1146e282b21faed3c9aadddbd0c52101af7b49360ebd9e3a288568e461102ab9",
       "mode": "0o644"
     },
     {
@@ -208,8 +208,8 @@
     },
     {
       "path": "docs/STATUS.md",
-      "bytes": 2384,
-      "sha256": "91ef318ef0f41490235226d66f966c8d287d1d893962a5c807411f0ae9ee659a",
+      "bytes": 3414,
+      "sha256": "43a9f6b7ff4cb996c10aa2afc477e9bd48738d6841130f7036cf0334d9eb0960",
       "mode": "0o644"
     },
     {
@@ -234,6 +234,18 @@
       "path": "docs/brand/netal-icon-256.png",
       "bytes": 52673,
       "sha256": "f3908d7e1accaa811cf89fbdb40a2d5c608cdbaf365cae69083d5125e1afe06e",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/brand/netal-menubar-overview.png",
+      "bytes": 186392,
+      "sha256": "b6314a0d5d10f2dec4057ecaabbe2bd38ddccf8999104d793599ad7738fd9e46",
+      "mode": "0o644"
+    },
+    {
+      "path": "docs/brand/netal-menubar-preview.gif",
+      "bytes": 1588998,
+      "sha256": "d139b7e84495f9bcb3e411157c11562b7657f20945182dfae055ca1b7334644a",
       "mode": "0o644"
     },
     {
@@ -8230,8 +8242,8 @@
     },
     {
       "path": "src/macos_app/NetalMenuBar/PanelViews.swift",
-      "bytes": 63897,
-      "sha256": "8941ecb6d44ea9c2d8e23dce191602f30955f3fb53a409515ba0358413840fdc",
+      "bytes": 63903,
+      "sha256": "e17eb7f374b775667f162ef0ef14885d149029e26a9af82790986d00902822ad",
       "mode": "0o644"
     },
     {

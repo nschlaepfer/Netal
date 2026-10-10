@@ -20,6 +20,24 @@ The historical working Resident Evil SR/FG integration remains established.
 The new offscreen tests do not replace those game observations or certify a
 new downloadable package.
 
+## DLSS 5 neural rendering research
+
+Netal's native Metal NR research includes a historical September 9, 2026
+checkpoint where one controlled reset frame appeared in the native Lies of P
+game window, followed by the game's original rendering. The same case's complete
+raw model output matched the original NVIDIA runtime on RTX in four fresh
+reference processes. Separate bounded still/reset and short-history experiments
+also recorded matching outputs. These are more than UI scaffolding, but their
+scope is deliberately narrow.
+
+The displayed case used an experimental color conversion and a zero-motion reset
+recipe. Its recorded worker GPU time was approximately 5.25 seconds. It does not
+establish continuous moving-image NR, playable performance, general game-depth
+or motion integration, or universal RTX parity. Continuous NR remains disabled
+in normal app launchers. This section summarizes retained research records;
+private game captures are not distributed, and it is not a new test of the
+downloadable menu-bar app.
+
 ## Open source-origin and setup work
 
 The full source includes 22 explicitly marked runtime-derived shader inputs.

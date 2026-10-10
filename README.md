@@ -2,9 +2,28 @@
 
 # Netal
 
-A native Metal neural-graphics runtime and macOS app. Netal's Super Resolution
-and native neural Frame Generation have worked inside Resident Evil Requiem
-through CrossOver.
+### [↓ Download v0.1.0 preview — Apple silicon DMG](https://github.com/nschlaepfer/Netal/releases/download/v0.1.0/Netal-0.1.0-apple-silicon.dmg)
+
+**Menu-bar app · macOS 14+ · Developer ID signed, not notarized.**
+The DLSS game runtime and supported model inputs require separate setup.
+[Release notes](https://github.com/nschlaepfer/Netal/releases/tag/v0.1.0) · [Setup guide](docs/getting-started.md)
+
+**NVIDIA DLSS, translated and rebuilt for Apple Metal.** Netal reconstructs the
+runtime around NVIDIA's models, with native Super Resolution, neural Frame
+Generation, experimental DLSS 5 neural rendering, and a macOS menu-bar app.
+Supply the supported NVIDIA DLL/model inputs; Netal executes the reconstructed
+implementation on Apple's GPU. It does not execute Windows DLL binaries directly
+on macOS.
+
+SR and native neural FG have worked in Resident Evil Requiem through CrossOver.
+DLSS 5 neural-rendering research has demonstrated bounded still/reset-frame
+inference, including one controlled frame displayed in Lies of P. Continuous,
+in-motion NR remains experimental and is not enabled by the normal app launcher.
+See [status and evidence](docs/STATUS.md).
+
+<p align="center"><img src="docs/brand/netal-menubar-preview.gif" alt="Netal menu-bar app tour: runtime status, DLSS controls and About, on a white background" width="1000"></p>
+
+<p align="center"><em>Fresh current-source app screens, shown before runtime setup.</em><br><a href="docs/brand/netal-menubar-overview.png">View still screenshots</a></p>
 
 **Experimental complete-source release.** This tree includes the actual SR/FG
 implementations, bridges, app and test lab. It is a research source release;
