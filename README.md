@@ -66,8 +66,10 @@ python3 scripts/build-netal-fg-engine.py --output /new/path/fg-engine
 ```
 
 The source-build guide covers all SR kernels, local runtime assembly and both
-game bridges. Source app builds use local ad-hoc signing. No binary installer,
-notarized release, model download or universal game-support claim is provided.
+game bridges. Source app builds use local ad-hoc signing. Menu-bar app preview
+downloads, when available, are listed under [Releases](https://github.com/nschlaepfer/Netal/releases)
+with their signing status. The app download does not include the separate game
+runtime or model inputs. No model download or universal game-support claim is provided.
 
 ## Evidence and limitations
 

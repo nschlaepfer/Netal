@@ -9,6 +9,12 @@ out="$repository/build/netal-menubar"
 app="$out/Netal.app"
 run=0
 [[ "${1:-}" == "--run" ]] && run=1
+app_version="${NETAL_APP_VERSION:-0.1.0}"
+app_build="${NETAL_APP_BUILD:-1}"
+release_channel="${NETAL_RELEASE_CHANNEL:-source-preview}"
+[[ "$app_version" =~ '^[0-9]+\.[0-9]+\.[0-9]+$' ]] || { print -u2 'Invalid NETAL_APP_VERSION'; exit 1; }
+[[ "$app_build" =~ '^[0-9]+$' ]] || { print -u2 'Invalid NETAL_APP_BUILD'; exit 1; }
+[[ "$release_channel" =~ '^[a-z0-9-]+$' ]] || { print -u2 'Invalid NETAL_RELEASE_CHANNEL'; exit 1; }
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$out"
@@ -24,9 +30,9 @@ cat > "$app/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>com.nschlaepfer.netal.menubar</string>
   <key>CFBundleExecutable</key><string>Netal</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.2.0</string>
-  <key>NetalReleaseChannel</key><string>source-preview</string>
-  <key>CFBundleVersion</key><string>2</string>
+  <key>CFBundleShortVersionString</key><string>$app_version</string>
+  <key>NetalReleaseChannel</key><string>$release_channel</string>
+  <key>CFBundleVersion</key><string>$app_build</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>LSMinimumSystemVersion</key><string>14.0</string>
   <!-- Menu-bar only: no Dock tile, no main window. -->
@@ -82,6 +88,8 @@ fi
 
 swiftc \
   -O -swift-version 5 \
+  -file-prefix-map "$repository=." -debug-prefix-map "$repository=." \
+  -file-compilation-dir . \
   -import-objc-header "$source_dir/NetalProcessInfo.h" \
   -target arm64-apple-macos14.0 \
   -framework SwiftUI -framework AppKit -framework Combine \
