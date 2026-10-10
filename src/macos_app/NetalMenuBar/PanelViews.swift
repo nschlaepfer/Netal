@@ -1046,12 +1046,12 @@ struct AboutView: View {
 
             VStack(spacing: 2) {
                 Text("Netal").font(.title3.weight(.semibold))
-                Text("Super resolution and frame generation on Apple silicon.")
+                Text("NVIDIA DLSS, translated and rebuilt for Apple Metal.")
                     .font(.caption).foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            Text("Source preview · NR experimental")
+            Text("SR + FG · DLSS 5 NR: still-frame research")
                 .font(.caption2).foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
 
