@@ -1,6 +1,21 @@
 # Getting started
 
-This source preview can build the Netal menu-bar app. Gameplay currently requires a separately prepared runtime; the public source tree does not include model weights or captured runtime data.
+Netal's menu-bar app can be built from source or installed from a preview DMG
+when available under [GitHub Releases](https://github.com/nschlaepfer/Netal/releases).
+Gameplay currently requires a separately prepared runtime; the source tree and
+menu-bar app download do not include model weights or captured runtime data.
+
+## Install the menu-bar app preview
+
+Use the Apple silicon DMG attached to the release. Drag `Netal.app` into
+Applications, then open it. Netal appears in the menu bar, without a Dock icon or
+normal main window. Read the release's signing/notarization status before
+installing; never disable system protections to install it.
+
+The app targets macOS 14+. Installing it alone does not install the separate
+DLSS SR/FG engine, model inputs or game bridges. Follow the runtime setup below.
+Window enhancement is a separate MetalFX-based feature, not the native DLSS
+network. The current game runtime requires macOS 26 and was measured on M3 Max.
 
 You must supply your own supported DLL from an authorized source. Only one exact
 `nvngx_dlss.dll` hash is validated for SR import; FG has a separate pinned

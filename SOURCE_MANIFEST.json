@@ -106,8 +106,8 @@
     },
     {
       "path": "README.md",
-      "bytes": 5411,
-      "sha256": "ded1e92d179cfc239f214af89778539b72ca1632afec84711bf19fd9d5fcb433",
+      "bytes": 5601,
+      "sha256": "b23665138fa48136195299c02faca59038c34fb46fe35b2f81375836c3e587e8",
       "mode": "0o644"
     },
     {
@@ -238,8 +238,8 @@
     },
     {
       "path": "docs/getting-started.md",
-      "bytes": 3328,
-      "sha256": "4a9c8ee0b411662b63bc28665ba493ff484c376fc6457d781241d1de15dbf51b",
+      "bytes": 4098,
+      "sha256": "331162f915a5c976f92edd7164ac9911777ca8601ac466398916a8b2f7ee966d",
       "mode": "0o644"
     },
     {
@@ -2080,8 +2080,8 @@
     },
     {
       "path": "scripts/build-macos-netal-menubar.sh",
-      "bytes": 5124,
-      "sha256": "b59c4cec266603b39e1e3f9970d3d2af45ff5253ef7a80adaf9063add20d31b2",
+      "bytes": 5667,
+      "sha256": "2b135fdd1d32803a3cece95cb650839dfde523f7bbed9cbbe4e1e4ecaebe5b5b",
       "mode": "0o755"
     },
     {
@@ -3331,6 +3331,12 @@
       "bytes": 1721,
       "sha256": "21eddda8c4f3b0a7286af6d5eb6a9667387b5b8cb35f653381b8c8eafea8b836",
       "mode": "0o644"
+    },
+    {
+      "path": "scripts/package-netal-dmg.sh",
+      "bytes": 2919,
+      "sha256": "9fcc9b06eb977060ccd81ebcfa638a3be2ff2fd04772caa8eb4a117492b6d0f3",
+      "mode": "0o755"
     },
     {
       "path": "scripts/package-nr-experimental-bundle.py",
@@ -8308,8 +8314,8 @@
     },
     {
       "path": "src/macos_app/NetalMenuBar/RuntimeSetupView.swift",
-      "bytes": 2892,
-      "sha256": "2d059bbb9be8e7e1ba0ce8f0c0b2304ea5134888ec3eed099518a3ac1302716b",
+      "bytes": 2932,
+      "sha256": "ac8a87dc32adff8bf33d4d7c940c1bb076c6c54896a0bf73daf0ea8762e44bc7",
       "mode": "0o644"
     },
     {

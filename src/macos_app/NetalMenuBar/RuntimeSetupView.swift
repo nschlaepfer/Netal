@@ -9,7 +9,7 @@ struct RuntimeSetupView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Runtime setup").font(.caption).foregroundStyle(.secondary)
-            Text("This source preview uses a prepared Netal runtime folder. Models are installed locally.")
+            Text("DLSS needs a prepared Netal runtime folder. Models are supplied separately; installing the app alone does not install SR or FG.")
                 .font(.caption2).foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
             Text(NetalBuildDefaults.runtimeRoot.path).font(.caption2.monospaced())
