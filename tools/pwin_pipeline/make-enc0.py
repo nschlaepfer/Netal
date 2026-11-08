@@ -1,4 +1,5 @@
 import json, struct, sys, os
+from mpp_backend import dispatch as mpp_dispatch
 GEMM = os.environ.get("PWIN_GEMM", "pwin_gemm2_tokens")
 MLP = os.environ.get("PWIN_MLP", "separate")
 MIX = os.environ.get("PWIN_MIX", "pwin_mix_window")
@@ -17,8 +18,10 @@ def gemm(x, w, c, y, tokens, k, n, xs, ys, cs, epi=0, cmode=0, cin=None, cbias=N
     prm = struct.pack("<16I", tokens, k, n, xs, ys, cs, epi, cmode, split, W, 4, wstride, 0, 0, 0, 0)
     bufs = [dict(index=0, **x), dict(index=1, **w), dict(index=2, **c), dict(index=3, **y),
             dict(index=5, **(cin or dict(name="pweights", offset=off("Zero32")))), dict(index=6, **(cbias or dict(name="pweights", offset=off("Zero32"))))]
-    grid = [(tokens + 63) // 64, 1, 1] if GEMM == "pwin_gemm_mpp" else [(tokens + 127) // 128, 1, 1]
-    block = [128, 1, 1] if GEMM == "pwin_gemm_mpp" else [256, 1, 1]
+    if GEMM == "pwin_gemm_mpp":
+        return mpp_dispatch(list(struct.unpack("<16I", prm)), bufs)
+    grid = [(tokens + 127) // 128, 1, 1]
+    block = [256, 1, 1]
     return {"function": GEMM, "grid": grid, "block": block, "buffers": bufs,
             "bytes": [{"index": 4, "u32": list(struct.unpack("<16I", prm))}], "constants": {"0": k, "1": n}}
 def norm(inp, out, gamma, mode):
@@ -67,7 +70,7 @@ d = [
   merge(dict(name="arena8", offset=43200), sc(MER)),
   gemm(sc(MER), pw("W7"), pw("C7"), dict(name="arena7", offset=0), T // 4, 128, 64, 128, 64, 64),
 ]
-pipe = {"library": "build/pwin_pipeline/pwin_all.metallib", "scratch_bytes": scratch_bytes,
+pipe = {"library": "build/pwin_pipeline/pwin_mpp_all.metallib" if GEMM == "pwin_gemm_mpp" else "build/pwin_pipeline/pwin_all.metallib", "scratch_bytes": scratch_bytes,
         "files": [{"name": "pweights", "path": "work/native/enc0/pipeline/weights-enc0.bin"}], "dispatches": d}
 json.dump(pipe, open(OUT, "w"), indent=1)
 print("dispatches", len(d), "scratch MB", scratch_bytes / 1e6)

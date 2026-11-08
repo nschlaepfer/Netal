@@ -14,6 +14,8 @@ working Resident Evil SR/FG integration.
 - [SR boundary metadata](SR_BOUNDARY_METADATA.md): local DLL-derived templates, generated profiles, and render-size correction.
 - [SR arithmetic modes](SR_ARITHMETIC_MODES.md): validated numerical scope and honest mode controls.
 - [SR body source build](SR_SOURCE_BUILD.md): generated layouts, model repacking, pipeline recipes, and current regression limits.
+- [Apple upscaling research](IOS_UPSCALING_RESEARCH.md): MetalFX capture, MLX and S2Arm comparisons.
+- [Experimental iOS SR](IOS_SR.md): A19 Pro/A20 Pro admission, native builds, MPP candidate, temporal inputs and measurement limits.
 - [FG engine source build](FG_SOURCE_BUILD.md): compile shaders and universal host libraries without models or inference.
 - [Local SR model setup](MODEL_SETUP.md): build capture helpers and import the supported model locally.
 - [Release gate](RELEASE.md): SR + FG scope, experimental NR, and remaining blockers.

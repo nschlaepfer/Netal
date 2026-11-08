@@ -8,8 +8,10 @@
 #include <cstdint>
 #include <cstdlib>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <unistd.h>
 
@@ -264,6 +266,12 @@ int main(int argc, const char* argv[]) {
       }
       id<MTLCommandBuffer> command = metal4 ? nil : [queue commandBuffer];
       id<MTL4CommandBuffer> command4 = nil;
+      // Commit feedback can arrive after a shared-event signal. Wait for this callback's own
+      // semaphore before using its timestamps; __block storage remains alive even on timeout.
+      dispatch_semaphore_t feedback_ready = dispatch_semaphore_create(0);
+      __block double feedback_start = 0.0, feedback_end = 0.0;
+      __block NSError* feedback_error = nil;
+      bool feedback_received = false;
       if (metal4) {
         command4 = [device newCommandBuffer];
         [command4 beginCommandBufferWithAllocator:allocator4];
@@ -318,7 +326,14 @@ int main(int argc, const char* argv[]) {
       if (metal4) {
         [command4 endCommandBuffer];
         id<MTL4CommandBuffer> list[1] = {command4};
-        [queue4 commit:list count:1];
+        MTL4CommitOptions* options = [MTL4CommitOptions new];
+        [options addFeedbackHandler:^(id<MTL4CommitFeedback> feedback) {
+          feedback_start = feedback.GPUStartTime;
+          feedback_end = feedback.GPUEndTime;
+          feedback_error = feedback.error;
+          dispatch_semaphore_signal(feedback_ready);
+        }];
+        [queue4 commit:list count:1 options:options];
         [queue4 signalEvent:done4 value:frame + 1];
         const auto wait_start = std::chrono::steady_clock::now();
         const BOOL signaled = [done4 waitUntilSignaledValue:frame + 1 timeoutMS:20000];
@@ -327,6 +342,13 @@ int main(int argc, const char* argv[]) {
                   << " signaled=" << (signaled ? 1 : 0) << " event_value=" << done4.signaledValue << '\n';
         if (!signaled) {
           std::cerr << "command_error frame=" << frame << " detail=metal4_timeout\n";
+          return 6;
+        }
+        feedback_received = dispatch_semaphore_wait(feedback_ready,
+            dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) == 0;
+        if (feedback_received && feedback_error != nil) {
+          std::cerr << "command_error frame=" << frame << " detail="
+                    << feedback_error.localizedDescription.UTF8String << '\n';
           return 6;
         }
         [allocator4 reset];
@@ -345,6 +367,20 @@ int main(int argc, const char* argv[]) {
                   << '\n';
         return 6;
       }
+      const double gpu_start = metal4 ? (feedback_received ? feedback_start : 0.0) : command.GPUStartTime;
+      const double gpu_end = metal4 ? (feedback_received ? feedback_end : 0.0) : command.GPUEndTime;
+      const bool valid_gpu_timing = (!metal4 || feedback_received) &&
+          std::isfinite(gpu_start) && std::isfinite(gpu_end) && gpu_start > 0.0 && gpu_end > gpu_start &&
+          std::isfinite((gpu_end - gpu_start) * 1000.0);
+      const double frame_gpu_ms = valid_gpu_timing ? (gpu_end - gpu_start) * 1000.0
+          : std::numeric_limits<double>::quiet_NaN();
+      if (valid_gpu_timing) {
+        [receipt appendFormat:@"frame_%lu_gpu_ms=%.3f\n", static_cast<unsigned long>(frame), frame_gpu_ms];
+      } else {
+        [receipt appendFormat:@"frame_%lu_gpu_ms=unavailable\n", static_cast<unsigned long>(frame)];
+      }
+      [receipt appendFormat:@"frame_%lu_gpu_timing_status=%s\n", static_cast<unsigned long>(frame),
+          valid_gpu_timing ? "measured" : "unavailable"];
 
       // Oracle bytes are deliberately unavailable until the GPU frame finishes.
       NSData* expected = Load(capture,
@@ -427,14 +463,12 @@ int main(int argc, const char* argv[]) {
                             static_cast<unsigned long>(frame), actual_sha.c_str()];
       [receipt appendFormat:@"frame_%lu_exact=%s\n",
                             static_cast<unsigned long>(frame), frame_pass ? "true" : "false"];
-      [receipt appendFormat:@"frame_%lu_gpu_ms=%.3f\n", static_cast<unsigned long>(frame),
-                            (metal4 ? 0.0 : (command.GPUEndTime - command.GPUStartTime) * 1000.0)];
-      if (NSData* timings = [session neuralStudioDiagnosticMufuTrace:7]) {
+      if (NSData* timings = valid_gpu_timing ? [session neuralStudioDiagnosticMufuTrace:7] : nil) {
         const auto* stamps = static_cast<const std::uint64_t*>(timings.bytes);
         const NSUInteger pairs = timings.length / 16;
         std::uint64_t total = 0;
         for (NSUInteger index = 0; index < pairs; ++index) total += stamps[index * 2 + 1] - stamps[index * 2];
-        const double frame_ms = (metal4 ? 0.0 : (command.GPUEndTime - command.GPUStartTime) * 1000.0);
+        const double frame_ms = frame_gpu_ms;
         NSMutableString* row = [NSMutableString string];
         for (NSUInteger index = 0; index < pairs; ++index) {
           const std::uint64_t ticks = stamps[index * 2 + 1] - stamps[index * 2];

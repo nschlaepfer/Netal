@@ -3,6 +3,7 @@ usage: make-layer.py enc0|dec0 [out.json]   (env: PWIN_GEMM=pwin_gemm2_tokens|pw
 import json, os, struct, sys
 layer = sys.argv[1]
 OUT = sys.argv[2] if len(sys.argv) > 2 else f"work/native/{layer}/pipeline/{layer}-pad.json"
+from mpp_backend import dispatch as mpp_dispatch
 GEMM = os.environ.get("PWIN_GEMM", "pwin_gemm3_tokens")
 CONTRACT = os.environ.get("PWIN_CONTRACT", "fused")
 W, H = int(os.environ.get("PWIN_W", "480")), int(os.environ.get("PWIN_H", "288"))   # enc0/dec0 token grid of the profile
@@ -35,8 +36,10 @@ def gemm(x, w, c, y, tokens, k, n, xs, ys, cs, epi=0, cmode=0, cin=None, cbias=N
                 "bytes": [{"index": 4, "u32": list(struct.unpack("<8I", prm))}],
                 "constants": {"0": k, "1": n, "2": xs, "3": cs, "7": ys, "8": wstride, "9": 0}}
     prm = struct.pack("<16I", tokens, k, n, xs, ys, cs, epi, cmode, split, width, shift_y, wstride, store_cols, 0, 0, 0)
-    grid = [(tokens + 63) // 64, 1, 1] if GEMM == "pwin_gemm_mpp" else [(tokens + 127) // 128, 1, 1]
-    block = [128, 1, 1] if GEMM == "pwin_gemm_mpp" else [256, 1, 1]
+    if GEMM == "pwin_gemm_mpp":
+        return mpp_dispatch(list(struct.unpack("<16I", prm)), bufs)
+    grid = [(tokens + 127) // 128, 1, 1]
+    block = [256, 1, 1]
     return {"function": GEMM, "grid": grid, "block": block, "buffers": bufs,
             "bytes": [{"index": 4, "u32": list(struct.unpack("<16I", prm))}], "constants": {"0": k, "1": n}}
 def norm(inp, out, gamma, mode, tokens=Tp):
@@ -101,7 +104,7 @@ if layer == "enc0":
 else:
     d += [gemm(sc(X4b), pw("W7"), pw("C7"), sc(OUTP), Tp, 32, 48, 32, 40, 48, store_cols=40),
           pad("pwin_pad_store", [sc(OUTP), AR(24)], 40, 40, 40, grid_items=T * 5)]
-pipe = {"library": "build/pwin_pipeline/pwin_all.metallib" if GEMM != "pwin_gemm_mpp" else "build/pwin_pipeline/pwin_all2.metallib", "scratch_bytes": scratch_bytes,
+pipe = {"library": "build/pwin_pipeline/pwin_all.metallib" if GEMM != "pwin_gemm_mpp" else "build/pwin_pipeline/pwin_mpp_all.metallib", "scratch_bytes": scratch_bytes,
         "files": [{"name": "pweights", "path": f"work/native/{layer}/pipeline/weights-{layer}.bin"}], "dispatches": d}
 json.dump(pipe, open(OUT, "w"), indent=1)
 print(layer, "dispatches", len(d), "scratch MB", scratch_bytes / 1e6, "->", OUT)

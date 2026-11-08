@@ -10,9 +10,17 @@
 #include <metal_stdlib>
 using namespace metal;
 
+// NETAL_SR_FAST_OUTPUT is an opt-in approximation of the retained scalar and
+// FP16 sampling contracts. It uses original native-Metal helper substitutions;
+// it does not claim NVIDIA arithmetic parity or temporal/image-quality validation.
+// The kernel ABI, gather order, algorithm and history writes are shared unchanged.
 
 static inline float cm_precise_rsqrt(
     float value, device const uchar* correction_rom) {
+#if defined(NETAL_SR_FAST_OUTPUT) && NETAL_SR_FAST_OUTPUT
+    (void)correction_rom;
+    return fast::rsqrt(value);
+#else
     uint input_bits = as_type<uint>(value);
     uint exponent = (input_bits >> 23u) & 0xffu;
     uint base_bits = as_type<uint>(precise::rsqrt(value));
@@ -28,6 +36,7 @@ static inline float cm_precise_rsqrt(
     else if (code == 2u) base_bits += 1u;
     else if (code == 3u) base_bits -= 2u;
     return as_type<float>(base_bits);
+#endif
 }
 
 
@@ -44,8 +53,13 @@ static inline uint cm_half2_mul(uint a, uint b) {
 }
 static inline uint cm_half2_ex2(
     uint a, device const ushort* ex2_lut) {
+#if defined(NETAL_SR_FAST_OUTPUT) && NETAL_SR_FAST_OUTPUT
+    (void)ex2_lut;
+    return as_type<uint>(half2(fast::exp2(float2(as_type<half2>(a)))));
+#else
     ushort2 input = as_type<ushort2>(a);
     return as_type<uint>(ushort2(ex2_lut[input[0]], ex2_lut[input[1]]));
+#endif
 }
 static inline uint cm_half2_fma(uint a, uint b, uint c) {
     return as_type<uint>(fma(as_type<half2>(a), as_type<half2>(b),
@@ -224,6 +238,18 @@ static inline float4 cm_tex_level_2d_f32(
               256.0f;
     int x0 = int(floor(x));
     int y0 = int(floor(y));
+#if defined(NETAL_SR_FAST_OUTPUT) && NETAL_SR_FAST_OUTPUT
+    // Preserve coordinate quantization, clamping, format conversion and channel
+    // zeros; replace the SM120 half datapath/weight ROM with float interpolation.
+    (void)weight_table;
+    float tx = x - float(x0);
+    float ty = y - float(y0);
+    float4 row0 = mix(cm_texture_texel(descriptor, x0, y0),
+                      cm_texture_texel(descriptor, x0 + 1, y0), tx);
+    float4 row1 = mix(cm_texture_texel(descriptor, x0, y0 + 1),
+                      cm_texture_texel(descriptor, x0 + 1, y0 + 1), tx);
+    return mix(row0, row1, ty);
+#else
     if (descriptor->format != 16u) {
         float tx = x - float(x0);
         float ty = y - float(y0);
@@ -266,6 +292,7 @@ static inline float4 cm_tex_level_2d_f32(
         result[component] = cm_texexact_half_rna(value);
     }
     return result;
+#endif
 }
 static inline float4 cm_tld4_r_2d_f32(ulong handle, float u, float v) {
     device const CmTexture2DDescriptor* descriptor =
@@ -376,6 +403,12 @@ static inline void cm_record_mufu_miss(
 static inline float cm_mufu_contract(
     float value, device const uint* keys, device const uint* values,
     device atomic_uint* misses, bool lg2) {
+#if defined(NETAL_SR_FAST_OUTPUT) && NETAL_SR_FAST_OUTPUT
+    (void)keys;
+    (void)values;
+    (void)misses;
+    return lg2 ? fast::log2(value) : fast::exp2(value);
+#else
     uint key = as_type<uint>(value);
     if (key == 0u) key = 1u;
     uint slot = (key * 0x9e3779b9u) & 0xfffffu;
@@ -387,6 +420,7 @@ static inline float cm_mufu_contract(
     }
     cm_record_mufu_miss(misses, key);
     return lg2 ? fast::log2(value) : fast::exp2(value);
+#endif
 }
 static inline float cm_lg2_approx_ftz_f32(
     float value, device const uint* keys, device const uint* values,
@@ -424,6 +458,10 @@ static inline float cm_rne_rcp_f32(float value) {
 }
 static inline float cm_rcp_approx_ftz_f32(
     float value, device const uchar* correction_rom) {
+#if defined(NETAL_SR_FAST_OUTPUT) && NETAL_SR_FAST_OUTPUT
+    (void)correction_rom;
+    return fast::divide(1.0f, value);
+#else
     uint input_bits = as_type<uint>(value);
     uint base_bits = as_type<uint>(cm_rne_rcp_f32(value));
     uint exponent = (input_bits >> 23u) & 0xffu;
@@ -438,10 +476,16 @@ static inline float cm_rcp_approx_ftz_f32(
     if (code == 1u) base_bits -= 1u;
     else if (code == 2u) base_bits += 1u;
     return as_type<float>(base_bits);
+#endif
 }
 static inline float cm_div_approx_ftz_f32(
     float numerator, float denominator, device const uchar* correction_rom) {
+#if defined(NETAL_SR_FAST_OUTPUT) && NETAL_SR_FAST_OUTPUT
+    (void)correction_rom;
+    return fast::divide(numerator, denominator);
+#else
     return numerator * cm_rcp_approx_ftz_f32(denominator, correction_rom);
+#endif
 }
 
 

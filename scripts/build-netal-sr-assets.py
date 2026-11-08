@@ -17,6 +17,7 @@ import tempfile
 from netal_sr_layouts import profile, STAGES
 from netal_sr_math import generate as generate_math
 from netal_sr_calibration import load as load_calibration
+from netal_apple_build import add_metal_target_arguments, metal_target, metal_toolchain
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_SIZES = ['1024x576','1280x720','1280x800','1920x1080','2560x1440','3440x1440','3840x2160']
@@ -35,9 +36,12 @@ def digest(data):
     return hashlib.sha256(data).hexdigest()
 
 
-def build(model, output, sizes, compile_metal=True, include_boundary=True):
+def build(model, output, sizes, compile_metal=True, include_boundary=True,
+          sdk='macosx', deployment_target=None):
     if output.exists() or output.is_symlink():
         raise ValueError('Output already exists; choose a new directory')
+    deployment_target,triple=metal_target(sdk,deployment_target)
+    target_info={'sdk':sdk,'deployment_target':deployment_target,'metal_target':triple}
     extractor=load('model_reference',ROOT/'tools/netal-dlss-extract.py')
     weights=(model/'weights.bin').read_bytes()
     if len(weights)!=extractor.KNOWN['weights.bin'] or digest(weights)!=extractor.REFERENCE['files']['weights.bin']:
@@ -60,6 +64,8 @@ def build(model, output, sizes, compile_metal=True, include_boundary=True):
     for path in (ROOT/'tools/pwin_pipeline').glob('make-*.py'):
         source(path)
     source(ROOT/'scripts/netal_sr_calibration.py')
+    source(ROOT/'scripts/netal_apple_build.py')
+    source(ROOT/'tools/pwin_pipeline/mpp_backend.py')
     source(ROOT/'runtime/arithmetic-calibration/manifest.json')
     calibration=load_calibration(ROOT)
     with tempfile.TemporaryDirectory(prefix='.sr-assets-',dir=output.parent) as temporary:
@@ -106,17 +112,17 @@ def build(model, output, sizes, compile_metal=True, include_boundary=True):
             metal=Path(temporary)/'pwin_all.metal';metal.write_bytes(combined)
             air=Path(temporary)/'pwin_all.air'
             library=stage/'metallib/pwin_all.metallib';library.parent.mkdir(exist_ok=True)
-            metal_tool=Path(subprocess.check_output(['xcrun','--find','metal'],text=True).strip())
-            library_tool=metal_tool.with_name('metallib')
-            if not library_tool.is_file():
-                library_tool=Path(subprocess.check_output(['xcrun','--find','metallib'],text=True).strip())
-            subprocess.run([str(metal_tool),'-std=metal4.0','-fno-fast-math','-c',str(metal),'-o',str(air)],check=True)
+            metal_tool,library_tool,target_flags,target_info=metal_toolchain(sdk,deployment_target)
+            subprocess.run([str(metal_tool),*target_flags,'-std=metal4.0','-fno-fast-math','-c',str(metal),'-o',str(air)],check=True)
             subprocess.run([str(library_tool),str(air),'-o',str(library)],check=True)
             compiler=subprocess.check_output([str(metal_tool),'--version'],text=True).strip()
+            child_target=['--sdk',sdk]
+            if deployment_target is not None:
+                child_target+=['--deployment-target',deployment_target]
             reference_builder=ROOT/'scripts/build-netal-sr-reference-kernels.py'
             source(reference_builder)
             reference_output=Path(temporary)/'reference-kernels'
-            subprocess.run([sys.executable,str(reference_builder),'--output',str(reference_output)],check=True)
+            subprocess.run([sys.executable,str(reference_builder),*child_target,'--output',str(reference_output)],check=True)
             reference_kernels=json.loads((reference_output/'build-receipt.json').read_text())['kernels']
             for kernel in reference_kernels:
                 source(ROOT/kernel['source'])
@@ -125,7 +131,7 @@ def build(model, output, sizes, compile_metal=True, include_boundary=True):
                 boundary_builder=ROOT/'scripts/build-netal-sr-boundary-kernels.py'
                 source(boundary_builder)
                 boundary_output=Path(temporary)/'boundary-kernels'
-                subprocess.run([sys.executable,str(boundary_builder),'--output',str(boundary_output)],check=True)
+                subprocess.run([sys.executable,str(boundary_builder),*child_target,'--output',str(boundary_output)],check=True)
                 boundary_receipt=json.loads((boundary_output/'build-receipt.json').read_text())
                 boundary_kernels=boundary_receipt['kernels']
                 for kernel in boundary_kernels:
@@ -134,13 +140,14 @@ def build(model, output, sizes, compile_metal=True, include_boundary=True):
                 texture_builder=ROOT/'scripts/build-netal-sr-texture-kernels.py'
                 source(texture_builder)
                 texture_output=Path(temporary)/'texture-kernels'
-                subprocess.run([sys.executable,str(texture_builder),'--output',str(texture_output)],check=True)
+                subprocess.run([sys.executable,str(texture_builder),*child_target,'--output',str(texture_output)],check=True)
                 texture_kernels=json.loads((texture_output/'build-receipt.json').read_text())['kernels']
                 for kernel in texture_kernels:
                     source(ROOT/kernel['source'])
                     shutil.copy2(texture_output/kernel['library'],stage/'metallib'/kernel['library'])
         records={p.relative_to(stage).as_posix():{'bytes':p.stat().st_size,'sha256':digest(p.read_bytes())} for p in sorted(stage.rglob('*')) if p.is_file()}
         receipt={'schema':'netal.sr.source-body-assets.v1','weights_sha256':digest(weights),
+                 **target_info,
                  'profiles':[f'{w}x{h}' for w,h in dimensions], 'sources':sources,'compiler':compiler,
                  'files':records,'complete_runtime':False,'inference_validated':False,'gameplay_validated':False,
                  'boundary_abi_included':boundaries is not None,
@@ -165,9 +172,11 @@ def main():
     parser.add_argument('--resolutions',nargs='+',default=DEFAULT_SIZES)
     parser.add_argument('--body-only',action='store_true',help='legacy diagnostic mode: omit boundary metadata')
     parser.add_argument('--no-compile',action='store_true',help='generate CPU assets only, without the Metal library')
+    add_metal_target_arguments(parser)
     args=parser.parse_args()
     try:
-        receipt=build(args.model.resolve(),args.output.absolute(),args.resolutions,not args.no_compile,not args.body_only)
+        receipt=build(args.model.resolve(),args.output.absolute(),args.resolutions,not args.no_compile,not args.body_only,
+                      args.sdk,args.deployment_target)
     except (OSError,ValueError,subprocess.CalledProcessError) as error:
         print(f'result=fail {error}',file=sys.stderr)
         if isinstance(error,subprocess.CalledProcessError) and error.stderr:print(error.stderr[-3000:],file=sys.stderr)
