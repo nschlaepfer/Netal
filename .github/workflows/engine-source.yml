@@ -29,13 +29,14 @@ jobs:
       - name: Compile SR reference, boundary and texture kernels
         run: |
           python3 scripts/build-netal-sr-reference-kernels.py --output "$RUNNER_TEMP/netal-sr-reference"
-          python3 scripts/build-netal-sr-boundary-kernels.py --output "$RUNNER_TEMP/netal-sr-boundaries"
+          python3 scripts/build-netal-sr-boundary-kernels.py --output "$RUNNER_TEMP/netal-sr-boundaries" --fast-output
           python3 scripts/build-netal-sr-texture-kernels.py --output "$RUNNER_TEMP/netal-sr-textures"
       - name: Compile experimental physical iOS SR and unsigned probe without models
         run: |
           python3 scripts/build-netal-ios-sr.py --output "$RUNNER_TEMP/netal-ios-sr" --sdk iphoneos --deployment-target 26.0 --kernels all
           python3 scripts/build-netal-sr-mpp-kernels.py --output "$RUNNER_TEMP/netal-ios-mpp" --sdk iphoneos --deployment-target 26.0
           python3 scripts/build-netal-sr-mpp-kernels.py --output "$RUNNER_TEMP/netal-ios-mpp-direct" --sdk iphoneos --deployment-target 26.0 --variant direct
+          python3 scripts/build-netal-sr-mpp-kernels.py --output "$RUNNER_TEMP/netal-ios-mpp-fast-half" --sdk iphoneos --deployment-target 26.0 --variant fast-half-mlp
           python3 scripts/build-netal-ios-sr-probe.py --library-root "$RUNNER_TEMP/netal-ios-sr" --output "$RUNNER_TEMP/netal-ios-probe"
       - name: Link native and CrossOver bridges against source-built FG
         env:
@@ -43,3 +44,14 @@ jobs:
         run: |
           zsh scripts/build-macos-netal-native-bridge.sh
           zsh scripts/build-macos-re9-metalfx-noop-bridge.sh
+      - name: Compile optional native FP8 and MetalFX labs when SDK 27 is available
+        run: |
+          SDK_VERSION=$(xcrun --sdk iphoneos --show-sdk-version)
+          SDK_MAJOR=${SDK_VERSION%%.*}
+          if [ "$SDK_MAJOR" -ge 27 ]; then
+            python3 scripts/build-netal-ios-fp8-lab.py --output-dir "$RUNNER_TEMP/netal-ios-fp8-lab"
+            python3 scripts/build-netal-ios-metalfx-lab.py --output "$RUNNER_TEMP/netal-ios-metalfx-lab"
+            python3 scripts/build-netal-sr-mpp-kernels.py --output "$RUNNER_TEMP/netal-ios-mpp-fp8" --sdk iphoneos --deployment-target 27.0 --variant fp8-mlp
+          else
+            echo "Optional FP8/MetalFX lab compilation unavailable on this SDK; requires iPhoneOS 27/MSL 4.1."
+          fi

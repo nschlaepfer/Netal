@@ -17,12 +17,18 @@ SOURCES={
  'netal_copy_exposure':('src/sr_kernels/netal_copy_exposure.metal','project-implementation-with-apache-2.0-helper-attribution', ['-std=metal4.0','-fno-fast-math']),
  'hiluma_output_depthinv_exact':('src/sr_kernels/hiluma_output_depthinv_exact.metal','translated-source-rights-review-required',['-fmetal-math-mode=safe']),
 }
+FAST_OUTPUT='hiluma_output_depthinv_fast'
+FAST_OUTPUT_SOURCE=('src/sr_kernels/hiluma_output_depthinv_exact.metal',
+                    'translated-source-rights-review-required',
+                    ['-fmetal-math-mode=safe','-DNETAL_SR_FAST_OUTPUT=1'])
 
 
 def main():
  parser=argparse.ArgumentParser(description=__doc__)
  parser.add_argument('--output',required=True,type=Path)
  parser.add_argument('--only',choices=list(SOURCES),action='append')
+ parser.add_argument('--fast-output',action='store_true',
+                     help='also build opt-in approximate native-math inverse-depth output; no quality/performance claim')
  add_metal_target_arguments(parser)
  args=parser.parse_args();output=args.output.absolute()
  if output.exists() or output.is_symlink():parser.error('output exists; choose a new directory')
@@ -32,12 +38,17 @@ def main():
   records=[]
   with tempfile.TemporaryDirectory(prefix='.boundary-kernels-',dir=output.parent) as tmp:
    stage=Path(tmp)/'output';stage.mkdir()
-   for name in args.only or SOURCES:
-    relative,provenance,flags=SOURCES[name];source=ROOT/relative;air=Path(tmp)/(name+'.air');library=stage/(name+'.metallib')
+   selected=list(args.only or SOURCES)
+   if args.fast_output:selected.append(FAST_OUTPUT)
+   for name in selected:
+    relative,provenance,flags=FAST_OUTPUT_SOURCE if name==FAST_OUTPUT else SOURCES[name]
+    source=ROOT/relative;air=Path(tmp)/(name+'.air');library=stage/(name+'.metallib')
     subprocess.run([str(metal),*target_flags,*flags,'-c',str(source),'-o',str(air)],check=True)
     subprocess.run([str(linker),str(air),'-o',str(library)],check=True)
-    records.append({'library':library.name,'source':relative,'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
-                    'flags':flags,'library_sha256':hashlib.sha256(library.read_bytes()).hexdigest(),'provenance':provenance})
+    record={'library':library.name,'source':relative,'source_sha256':hashlib.sha256(source.read_bytes()).hexdigest(),
+            'flags':flags,'library_sha256':hashlib.sha256(library.read_bytes()).hexdigest(),'provenance':provenance}
+    if name==FAST_OUTPUT:record['arithmetic']='approximate-native-output; not NVIDIA-parity validated'
+    records.append(record)
    receipt={'schema':'netal.sr.boundary-kernels.v1',**target_receipt,'compiler':subprocess.check_output([str(metal),'--version'],text=True).strip(),
             'kernels':records,'complete_runtime':False,'inference_validated':False,'redistribution_cleared':False}
    (stage/'build-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n');stage.rename(output)

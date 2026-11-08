@@ -486,6 +486,8 @@ DispatchTiming* g_dispatch_timing = nullptr;
 constexpr NSUInteger kRingSlots = 6, kRingBuffers = 10, kRingTables = 160, kRingBytes = 4096;
 
 struct SessionState {
+  __strong NSString* depth_input_library_name = nil;
+  __strong NSString* depth_output_library_name = nil;
   __strong id<MTLDevice> device = nil;
   Geometry geometry;
   __strong NSURL* bundle_url = nil;
@@ -1260,15 +1262,17 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
                ExactLibrary(runtimeBundleURL, @"cuda_copy_exposure_kernel", @"netal_copy_exposure",
                             "NEURALSTUDIO_SR_EXPOSURE_LIBRARY"),
                @"cuda_copy_exposure_kernel", error);
+  _state->depth_input_library_name = ExactLibrary(
+      runtimeBundleURL, @"hiluma_input_depthinv", @"hiluma_input_depthinv_exact",
+      "NEURALSTUDIO_SR_DEPTH_INPUT_LIBRARY");
+  _state->depth_output_library_name = ExactLibrary(
+      runtimeBundleURL, @"hiluma_output_depthinv", @"hiluma_output_depthinv_exact",
+      "NEURALSTUDIO_SR_DEPTH_OUTPUT_LIBRARY");
   _state->depth_inverted_input_pipeline = Pipeline(
-      device, runtimeBundleURL,
-      ExactLibrary(runtimeBundleURL, @"hiluma_input_depthinv", @"hiluma_input_depthinv_exact",
-                   "NEURALSTUDIO_SR_DEPTH_INPUT_LIBRARY"),
+      device, runtimeBundleURL, _state->depth_input_library_name,
       @"hiluma_engine_input_depthinv_mvlo_hdr_v2_rel", error);
   _state->depth_inverted_output_pipeline = Pipeline(
-      device, runtimeBundleURL,
-      ExactLibrary(runtimeBundleURL, @"hiluma_output_depthinv", @"hiluma_output_depthinv_exact",
-                   "NEURALSTUDIO_SR_DEPTH_OUTPUT_LIBRARY"),
+      device, runtimeBundleURL, _state->depth_output_library_name,
       @"hiluma_engine_output_depthinv_mvlo_hdr_max_v2_rel", error);
   if (_state->input_pipeline == nil || _state->output_pipeline == nil ||
       _state->exposure_pipeline == nil ||
@@ -1492,6 +1496,10 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
         NSData* blob = Load(runtimeBundleURL, fj[@"path"], error);
         if (blob == nil) { SetError(error, 40, @"pipeline weight file missing"); return nil; }
         id<MTLBuffer> buffer = BufferFromData(device, blob);
+        if (buffer == nil) {
+          SetError(error, 40, @"pipeline weight buffer allocation failed");
+          return nil;
+        }
         _state->pipeline_weights.push_back(buffer);
         named[[fj[@"name"] UTF8String]] = {buffer, 0};
       }
@@ -1818,6 +1826,8 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
 - (BOOL)isConsumed { return _state != nullptr && _state->consumed.load(); }
 - (NSUInteger)pipelineLayersTotal { return _state == nullptr ? 0 : _state->pipeline_layers_total; }
 - (NSUInteger)pipelineLayersPresent { return _state == nullptr ? 0 : _state->pipeline_layers_present; }
+- (NSString*)depthInputLibraryName { return _state == nullptr ? @"" : (_state->depth_input_library_name ?: @""); }
+- (NSString*)depthOutputLibraryName { return _state == nullptr ? @"" : (_state->depth_output_library_name ?: @""); }
 - (NSString*)pipelineLayersMissing {
   if (_state == nullptr || _state->pipeline_layers_missing.empty()) return @"";
   return [NSString stringWithUTF8String:_state->pipeline_layers_missing.c_str()];

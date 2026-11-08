@@ -23,7 +23,7 @@ def valid_showcase_gif(data):
             and hashlib.sha256(data).hexdigest() == SHOWCASE_GIF_IDENTITY['sha256'])
 
 ROOT_FILES = {'LICENSES/CuMetal-Apache-2.0.txt', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', '.gitignore', '.gitattributes', '.github/CODEOWNERS', '.github/rulesets/main.json'}
-DOCS = {'docs/IOS_SR.md', 'docs/FG_SOURCE_BUILD.md', 'docs/SR_BOUNDARY_KERNELS_AND_MATH.md', 'docs/SOURCE_PROVENANCE_REVIEW.md', 'docs/SR_BOUNDARY_METADATA.md', 'docs/SR_ARITHMETIC_MODES.md', 'docs/SR_SOURCE_BUILD.md', 'docs/MODEL_SETUP.md', 'docs/README.md', 'docs/getting-started.md', 'docs/RELEASE.md', 'docs/architecture.md',
+DOCS = {'docs/IOS_UPSCALING_RESEARCH.md', 'docs/IOS_SR.md', 'docs/FG_SOURCE_BUILD.md', 'docs/SR_BOUNDARY_KERNELS_AND_MATH.md', 'docs/SOURCE_PROVENANCE_REVIEW.md', 'docs/SR_BOUNDARY_METADATA.md', 'docs/SR_ARITHMETIC_MODES.md', 'docs/SR_SOURCE_BUILD.md', 'docs/MODEL_SETUP.md', 'docs/README.md', 'docs/getting-started.md', 'docs/RELEASE.md', 'docs/architecture.md',
         'docs/roadmap.md', 'docs/menubar.md', 'docs/RUNTIME_BUNDLE.md', 'docs/performance.md', 'docs/REPOSITORY_GOVERNANCE.md', 'docs/PUBLIC_READINESS.md', 'docs/COMPLETE_SOURCE_BUILD.md', 'docs/STATUS.md'}
 EXTENSIONS = {'.swift', '.c', '.cc', '.cpp', '.h', '.hpp', '.mm', '.m', '.metal', '.py', '.sh',
               '.zsh', '.ps1', '.cmake', '.def', '.json', '.toml', '.txt', '.md'}

@@ -56,6 +56,14 @@ jobs:
           python3 scripts/test-netal-ios-sr-build.py
           python3 scripts/test-netal-ios-sr-probe.py
           python3 scripts/test-netal-sr-mpp.py
+          python3 scripts/test-netal-sr-mpp-mlp.py
+          python3 scripts/test-netal-sr-fast-half.py
+          python3 scripts/test-netal-sr-fast-pipelines.py
+          python3 scripts/test-netal-sr-fast-output.py
+          python3 scripts/test-netal-sr-fp8-pack.py
+          python3 scripts/test-netal-sr-fp8.py
+          python3 scripts/test-netal-ios-fp8-lab.py
+          python3 scripts/test-netal-ios-metalfx-lab.py
       - name: Build app
         run: zsh scripts/build-macos-netal-menubar.sh
       - name: Validate export tooling

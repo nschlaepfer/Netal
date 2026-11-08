@@ -5,6 +5,8 @@ engine for physical iOS and iPadOS devices with **A19 Pro or A20 Pro**. It also
 provides an unsigned model-execution test app and an opt-in, approximate Metal
 Performance Primitives (MPP) GEMM backend. It does not include a game integration,
 Frame Generation, a DLSS 4.5 implementation, or a demonstrated 2–3 ms latency.
+An additional experimental A20 Pro/iOS 27 path uses derived E4M3FN weights and
+FP8-input TensorOps; it keeps the original model and default path available.
 
 **A physical A20 Pro has completed the procedural model test.** The isolated
 SR timings below do not establish image quality, Neural Accelerator instruction
@@ -64,7 +66,7 @@ The existing native Mac path has its own policy and remains separate.
 | Metal 4, `MTLTensor`, FP16 MPP candidate | iOS/iPadOS 26+ and the checks above. This is the current SR arithmetic route. |
 | GPU Neural Accelerator candidate | Apple10 and later hardware. Family membership plus chip admission is an eligibility signal, not a verified dispatch. |
 | FP8 E4M3/E5M2 tensor types | iOS/iPadOS 27+ with a sufficiently recent SDK and successful allocations. The capability flag proves small allocations only. |
-| Quantized FP8 SR | Not implemented or validated by this port. Allocating FP8 storage does not quantize the model or validate its accuracy. |
+| Quantized FP8 SR | Experimental A20 Pro/iOS 27 mixed-precision candidate. Explicit source-derived pack, native FP8-input TensorOps, per-row GPU quantization and separate quality/performance evidence are required. Allocation alone is insufficient. |
 
 Apple's [`MTLTensor` documentation](https://developer.apple.com/documentation/metal/mtltensor)
 records iOS/iPadOS 26 availability. The
@@ -124,6 +126,84 @@ resolve the existing distribution-rights review for retained translated inputs.
 NVIDIA DLLs, extracted model bytes, SDK headers, runtime bundles and private
 scalar-contract tables are never supplied by these commands or included in the
 public source. Keep local inputs and generated assets out of commits and PRs.
+
+## Explicit arithmetic experiments
+
+The default Reference/Batched paths retain their existing contracts. Approximate
+arithmetic is opt-in and its NVIDIA model identity remains DLSS 4 K, not 4.5.
+Kernel-builder variants include `staged`, `direct`, `direct-mlp`, `fast-half`,
+`fast-half-mlp`, `fp8` and `fp8-mlp`; inspect each build receipt and use matching
+sidecars rather than changing a name in configuration.
+
+- `direct-mlp` adds FP16 TensorOps expansion/GELU/contraction while preserving its
+  documented rounded intermediates. Six MLP dispatches use 64-token/128-thread
+  tiles and need matching grids.
+- `fast-half-mlp` uses one full-K FP16-input/FP32-accumulation GEMM, omits original
+  K16 FP16 handoffs, then applies real-unit bias/residual. This is a deliberate
+  arithmetic relaxation, not reference equality.
+- `fp8-mlp` uses 40 E4M3-input GEMMs, 40 GPU activation quantizers, two sensitive
+  FP16 exceptions and six FP16 TensorOps MLPs. Norms, attention, biases, residual
+  work, boundaries and history retain their declared existing precision.
+
+A reproducible fast-half sidecar build uses the separate generator:
+
+```sh
+python3 scripts/build-netal-sr-mpp-kernels.py \
+  --sdk iphoneos --deployment-target 26.0 --variant fast-half-mlp \
+  --output build/ios-fast-half-kernels
+python3 scripts/build-netal-sr-fast-pipelines.py \
+  --bundle '/path/to/private/source-runtime' --variant fast-half-mlp \
+  --output build/ios-fast-half-sidecars
+```
+
+Copy generated `pipeline/` and `profiles/` JSONs into a **fresh copy** of the
+source runtime, and copy `pwin_mpp_all.metallib` into its `metallib/` directory.
+Preserve the build/generator receipts, then reseal with
+`python3 scripts/seal-netal-sr-runtime.py NEW_RUNTIME --replace`. Matching grids
+are required: replacing the MLP shader while retaining its old 256-thread grids
+is unsupported. The generator does not modify or copy model weights.
+
+The FP8 pack builder deep-verifies the pinned source runtime and canonical
+public graph, then writes separate private payloads. It transposes and pads
+weights, uses per-output-column FP32 dequantization scales, and records exact
+E4M3FN ties-to-even/saturation semantics. Two sensitive tensors (`enc0.W1`,
+`dec0.W7`) stay FP16. The pack contains 52 quantized and two retained matrices;
+12 packed MLP matrices are reserved for future work and are not used by the
+current mixed runtime. All original blobs remain present for non-GEMM work and
+fallback, so total resident memory does not automatically halve.
+
+The aligned pack occupies 2,049,536 bytes versus 3,158,016 active FP16 matrix
+bytes. Quantized-weight reconstruction relative RMS is 2.56953%; this is not
+image error. Per-row activation scaling and quantization are real GPU work and
+must be included in full-pass timings. The native shader consumes FP8 format
+operands directly; the host cannot establish the driver's final instruction
+precision merely from that API choice.
+
+To build the separate mixed FP8 experiment:
+
+```sh
+python3 scripts/build-netal-sr-fp8-pack.py \
+  --runtime '/path/to/private/source-runtime' --output build/private-fp8-pack
+python3 scripts/build-netal-sr-mpp-kernels.py \
+  --sdk iphoneos --deployment-target 27.0 --variant fp8-mlp \
+  --output build/ios-fp8-kernels
+python3 scripts/build-netal-sr-fp8-pipelines.py \
+  --bundle '/path/to/private/source-runtime' \
+  --pack build/private-fp8-pack --output build/private-fp8-sidecars
+```
+
+Use another fresh source-runtime copy. Copy the pack's `pipeline/fp8/` payloads
+into that same relative path, its `manifest.json` to `pipeline/fp8/pack.json`,
+the generated `pipeline/` and `profiles/` sidecars to their matching locations,
+and the new metallib to `metallib/pwin_mpp_all.metallib`. Preserve receipts and
+reseal. The probe's `fp8-candidate` admission requires the supported mixed
+`fp8-mlp` graph; the separate original-MLP ablation is not admitted by that
+validator. All pack data and generated libraries are private local outputs.
+
+A model-free FP8 lab executes E4M3/E5M2 matrix operations and compares CPU-oracle
+math, packing, canaries and valid GPU timings on A20 Pro/iOS 27. It is a separate
+operator experiment and does not load the DLSS model. The ordinary SR library
+and probe still build for iOS 26 without this optional lab.
 
 ## Build the physical-device library and local runtime
 
@@ -302,6 +382,139 @@ and passed correctly at the scene-rendering stage; a color-only resize or
 sharpening pass must be labeled by its actual method. The existing game and its
 saves should remain independently usable while that adapter is developed.
 
+## Optional operator, MetalFX and capture builds
+
+The ordinary probe remains model-free until a private runtime is supplied.
+Optional modules can be linked explicitly:
+
+```sh
+python3 scripts/build-netal-ios-fp8-lab.py --output-dir build/ios-fp8-lab
+python3 scripts/build-netal-ios-metalfx-lab.py --output build/ios-metalfx-lab
+python3 scripts/build-netal-ios-sr-probe.py \
+  --library-root build/ios-sr-core --deployment-target 27.0 \
+  --fp8-lab-root build/ios-fp8-lab \
+  --metalfx-lab-root build/ios-metalfx-lab \
+  --output build/ios-comparison-probe
+```
+
+FP8 requires SDK/iOS 27 and MSL 4.1. These optional modules contain procedural
+fixtures and code, never model weights. The builder verifies the module/header/
+shared-stimulus identities and copies the model-free FP8 metallib when requested.
+Use `--prepare-xcode` and caller-supplied signing settings for device installation.
+The default unsigned build does not install or sign an app.
+
+`probe_mode` defaults to `sr`. `fp8_lab` runs the synthetic matrix/packing tests
+before any model is loaded. `metalfx_spatial` and `metalfx_temporal` run the
+standalone Apple scalers, likewise without a Netal model session. Check mode,
+actual dimensions, final state, finite/guard checks and timing scope in every
+receipt. The [research note](IOS_UPSCALING_RESEARCH.md) records public contracts
+and actual MetalFX/MLX/S2Arm findings.
+
+Capture uses a **separate** build with `--enable-metal-capture` and MetalFX
+configuration `capture: true`. It records one warmed frame to a private
+`.gputrace`. Capture-enabled builds refuse normal SR/operator/scaler performance
+runs. Restore an ordinary build before comparing latency. No capture resource
+or raw output belongs in this repository.
+
+### Boundary experiments and diagnostics
+
+`fast_input_boundary: true` selects the existing separate inverse-depth native
+math input library. `fast_output_boundary: true` requires a separately built
+approximate output library:
+
+```sh
+python3 scripts/build-netal-sr-boundary-kernels.py \
+  --sdk iphoneos --deployment-target 26.0 \
+  --only hiluma_output_depthinv_exact --fast-output \
+  --output build/ios-fast-output
+```
+
+Copy only the fast metallib into a separate runtime and reseal that runtime. The
+exact output library remains unchanged. The optional macro changes selected
+math/sampling helpers while retaining the kernel body, history updates, ABI,
+bounds and CUDA gather ordering; it is a deliberate numerical approximation.
+Receipts report actual Core-selected library names and inventory hashes.
+
+`diagnostic_output_repeat` accepts integers 1–8. Values above 1 repeat the output
+pass and produce **profiling-only** results, not normal SR latency. Restart the
+app between repeat values because Core caches the setting. The probe bounds the
+full graph against 160 Metal 4 argument tables. Check every temporal output hash
+against the ordinary run before using amplification for attribution.
+
+On the A20 procedural case, 4× and 8× output runs preserved all 136 frame hashes
+and suggested approximately 2.48 ms per extra exact-output pass. This is a
+controlled diagnostic estimate, not a precise counter-based stage profile.
+
+## Separate render size from output size
+
+NVIDIA reduces the scene's internal rendering resolution before reconstruction.
+Typical per-axis ratios are Quality about 66.7%, Balanced about 58%, Performance
+50%, and Ultra Performance about 33.3%. For 1920×1080 output, the latter two
+mean 960×540 and 640×360 input: respectively one quarter and one ninth of the
+native scene pixels, not corresponding guaranteed FPS multipliers. See
+[NVIDIA's rendering-resolution explanation](https://developer.nvidia.com/blog/tips-getting-the-most-out-of-the-dlss-unreal-engine-4-plugin/).
+
+The probe accepts an optional explicit `render_size`, independently of the
+output `profile`:
+
+```json
+{
+  "profile": "1920x1080",
+  "render_size": "960x540",
+  "backend": "batched",
+  "metal_api": "metal4",
+  "warmup_frames": 16,
+  "measured_frames": 120,
+  "save_last_output": true
+}
+```
+
+Omit `render_size` for the profile's existing reference geometry. Requested
+input dimensions must be positive, bounded, no larger than the output, and match
+its aspect ratio within rounding tolerance. The probe verifies the resulting
+session dimensions. Each run constructs a new session and resets its history.
+This does not implement NVIDIA's optimal-settings query or dynamic-resolution
+integration in a game.
+
+These are **exploratory input ratios**, using the existing supported K model.
+NVIDIA recommends 18/24/32/72 jitter phases for Quality/Balanced/Performance/
+Ultra respectively; Netal's current temporal gate accepts its known set of 18
+captured positions. The ratio experiments retain that gate and sequence rather
+than silently enabling arbitrary jitter. They do not certify the corresponding
+NVIDIA modes or establish quality with 32/72-phase sequences.
+[Current NVIDIA guide, §3.7.1.1](https://github.com/NVIDIA/DLSS/blob/9981c6350dc58c0ce21f024fd65e31e851c31689/doc/DLSS_Programming_Guide_Release.pdf).
+
+At a fixed output, Netal's dense network dimensions and arenas still follow the
+output profile. Lowering scene rendering can save game work without lowering the
+same-output neural pass proportionally. Test reduced rendering plus SR,
+import/export and presentation against the original complete frame. Enlarging
+output alone does not create a performance gain.
+
+The ratio probe uses a versioned normalized-world stimulus: fixed spatial
+frequencies and normalized motion, with jitter in actual input-pixel units.
+This keeps scene extent and motion consistent across input sizes. Measurements
+from this stimulus are separate from the initial pixel-based checkpoint below.
+
+### Controlled input-ratio measurements
+
+A fresh normalized-world stimulus v2 run on the A20 Pro used the same Batched
+model, 16 warm-up plus 120 measured frames per case, and nominal thermal state.
+Baseline repeats bracketed each output group; their medians stayed within 0.03 ms.
+
+| Output | Actual input | Source-pixel fraction | SR GPU p50 |
+| --- | --- | ---: | ---: |
+| 1280×720 | 854×480 | 44.48% | 13.316 ms |
+| 1280×720 | 640×360 | 25.00% | 12.535 ms |
+| 1280×720 | 426×240 | 11.09% | 12.363 ms |
+| 1920×1080 | 1280×720 | 44.44% | 23.011 ms |
+| 1920×1080 | 960×540 | 25.00% | 22.136 ms |
+| 1920×1080 | 640×360 | 11.11% | 21.340 ms |
+
+These are the known-18-jitter exploratory ratios described above. The measured
+SR cost falls modestly; the potentially larger benefit is avoided scene-rendering
+work, which this standalone test excludes. No game FPS or equivalent perceptual
+quality is established by this table.
+
 ## Recorded isolated A20 Pro measurements
 
 On 2026-11-08, a physical iPhone 18 Pro Max (A20 Pro GPU), iOS 27.2,
@@ -347,6 +560,49 @@ The full-pass timings exceed 2–3 ms. Even 13 ms consumes most of a 16.67 ms
 OoT presentation hook still lacks the verified temporal inputs described above;
 this test does not enable DLSS in that game. Further work needs measured stage
 costs, acceleration of remaining operators, and a correct game adapter.
+
+## Final speed-mode checkpoint
+
+After the explicit arithmetic and boundary experiments, the current A20 Pro
+standalone test recorded the following with stimulus v2, 16 warm-up plus 120
+measured frames, all 136 frames completed, nominal thermal state, verified actual
+boundary library hashes, and capture disabled:
+
+| Actual input → output | Batched baseline p50 | Fast-half + native boundaries p50 | Fast p95 / p99 |
+| --- | ---: | ---: | ---: |
+| 640×360 → 1280×720 | 12.535 ms | 8.309 ms | 8.385 / 8.409 ms |
+| 960×540 → 1920×1080 | 22.136 ms | 14.406 ms | 14.527 / 14.622 ms |
+| 640×360 → 1920×1080 | 21.340 ms | 14.354 ms | 14.532 / 14.611 ms |
+
+A bracketed 720p repeat measured 8.305 ms. This is approximately one-third less
+SR GPU time than the matched Batched cases, not a measured game-FPS increase.
+It is still above the requested 2–3 ms SR target. These are exploratory input
+ratios with the known 18-phase contract, not newly certified NVIDIA presets.
+
+The last frame (135) differed from matching Batched output by RGB RMS
+0.0002282 at 720p, 0.0002565 at 1080p/2×, and 0.0002846 at 1080p/3×; maximum
+absolute differences were respectively 0.0039063, 0.0029297 and 0.0068359. No
+nonfinite values were found. This compares one smooth procedural scene and two
+approximate implementations; it does not establish RTX parity, broad visual
+quality, disocclusion behavior or sustained gameplay.
+
+The selected fast-half library SHA-256 is
+`1c3c30df9256f75270f06431346c9ac22bf6c628c99df8a59cf8323ff3e6ccda`;
+fast input is
+`9134a0bf8ace55a1812735fb807a30e18203c3dda2335571dc963e67282df358`;
+fast output is
+`e50158bfc8127bc2f4806b95d51b45ddb5fe45fe872e9e50977a77259d927d0c`.
+The original exact output remains byte-identical to the pinned earlier build.
+
+The explicit mixed FP8 candidate also passed full model execution and descriptor
+admission: 40 FP8 GEMMs, 40 GPU quantizers, two FP16 sensitive exceptions and six
+half MLPs, with 137 total per-frame dispatches including boundaries. With exact
+boundaries it measured 12.533 ms at 640×360 → 1280×720. With the same fast input/output boundaries as the fast-half candidate, the
+fully admitted FP8 run measured 9.730 ms (p95 9.869, p99 9.902), compared with
+8.309 ms for fast-half. FP8 is therefore not selected merely for its format name;
+packing and all surrounding work must win in the complete path. The model-free physical operator lab passed all 30 records,
+but did not prove the driver's final native-FP8 instruction implementation or a
+universal throughput advantage.
 
 ## What a performance result must measure
 

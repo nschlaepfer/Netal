@@ -24,6 +24,9 @@ FOUNDATION_EXPORT BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitterOffsetX,
 @property(nonatomic, readonly) NSUInteger pipelineLayersTotal;
 @property(nonatomic, readonly) NSUInteger pipelineLayersPresent;
 @property(nonatomic, readonly, copy) NSString* pipelineLayersMissing;
+// Actual libraries selected during initialization for reversed-depth boundaries.
+@property(nonatomic, readonly, copy) NSString* depthInputLibraryName;
+@property(nonatomic, readonly, copy) NSString* depthOutputLibraryName;
 
 - (nullable instancetype)initWithDevice:(id<MTLDevice>)device
                        runtimeBundleURL:(NSURL*)runtimeBundleURL

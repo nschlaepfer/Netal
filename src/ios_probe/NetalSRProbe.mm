@@ -2,9 +2,16 @@
 #import <UIKit/UIKit.h>
 #import <Metal/Metal.h>
 #import <NetalIOSSR/NetalIOSSR.h>
+#if defined(NETAL_IOS_FP8_LAB) && NETAL_IOS_FP8_LAB
+#import "NetalFP8MatmulLab.h"
+#endif
+#if defined(NETAL_IOS_METALFX_LAB) && NETAL_IOS_METALFX_LAB
+#import "NetalMetalFXLab.h"
+#endif
 #import <CommonCrypto/CommonDigest.h>
 #import <mach/mach.h>
 #include "NetalProbeMetrics.h"
+#include "NetalProbeFP8Audit.h"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -13,10 +20,18 @@
 #include <cstring>
 #include <memory>
 
+// Method declarations keep old source-only archives usable for comparison. The probe checks
+// respondsToSelector before calling; current Core implements both read-only selection properties.
+@interface NeuralStudioDLSSSRSession (ProbeLibrarySelection)
+- (NSString*)depthInputLibraryName;
+- (NSString*)depthOutputLibraryName;
+@end
+
 namespace {
 using Clock = std::chrono::steady_clock;
 constexpr NSUInteger kGuard = 256;
 constexpr std::uint16_t kOutputPoison = 0x7e00; // quiet NaN: untouched output cannot pass finite checks.
+std::atomic<NSUInteger> gFirstEncodedOutputRepeat{0};
 constexpr std::array<std::array<float, 2>, 18> kJitter = {{
     {-0.3125f,-0.351851851f},{0.1875f,-0.0185185075f},
     {-0.0625f,0.314814806f},{0.4375f,-0.240740746f},
@@ -141,17 +156,107 @@ void Inputs(id<MTLBuffer> color,id<MTLBuffer> motion,id<MTLBuffer> depth,id<MTLB
     auto* d=static_cast<float*>(depth.contents);
     for (NSUInteger y=0;y<height;++y)for(NSUInteger x=0;x<width;++x) {
         const NSUInteger index=y*width+x;
-        const float sx=static_cast<float>(x)+jitterX-static_cast<float>(frame);
-        const float sy=static_cast<float>(y)+jitterY;
-        const float wave=0.5f+0.5f*std::sin(sx*0.075f)*std::cos(sy*0.075f);
-        c[index*4]=static_cast<_Float16>(wave*2.0f);
-        c[index*4+1]=static_cast<_Float16>(0.25f+0.7f*wave);
-        c[index*4+2]=static_cast<_Float16>(1.0f-wave*0.8f);
-        c[index*4+3]=static_cast<_Float16>(1.0f);
-        m[index*2]=static_cast<_Float16>(-1.0f/static_cast<float>(width));
+        const auto rgba=netal_probe::PlaneColor(x,y,jitterX,jitterY,
+            {static_cast<std::uint32_t>(width),static_cast<std::uint32_t>(height)},frame);
+        for(NSUInteger channel=0;channel<4;++channel)c[index*4+channel]=static_cast<_Float16>(rgba[channel]);
+        m[index*2]=static_cast<_Float16>(-netal_probe::kPlaneVelocityU);
         m[index*2+1]=static_cast<_Float16>(0.0f);d[index]=0.75f;
     }
     *static_cast<float*>(exposure.contents)=1.0f;
+}
+
+NSMutableDictionary* RunOperatorLab(NSDictionary* base,NSDictionary* config,id<MTLDevice> device,
+    void (^progress)(NSString*),std::shared_ptr<std::atomic<int>> stopFlag) {
+    NSMutableDictionary* receipt=[@{@"schema":@"netal.ios.operator-lab.device-probe.v1",@"state":@"unavailable",
+        @"probe_mode":@"fp8_lab",@"started_utc":base[@"started_utc"],@"os":base[@"os"],
+        @"hardware":base[@"hardware"],@"probe_source_sha256":base[@"probe_source_sha256"],
+        @"cleared_sr_environment_keys":base[@"cleared_sr_environment_keys"],
+        @"thermal_start":base[@"thermal_start"],@"memory_footprint_start_bytes":base[@"memory_footprint_start_bytes"],
+        @"scope":@"optional model-free synthetic matrix operator experiment",
+        @"excludes":@[@"DLSS model execution",@"upscaling",@"game rendering",@"presentation"],
+        @"operator_execution_validated":@NO,@"hardware_native_fp8_instruction_verified":@NO,
+        @"full_sr_validated":@NO,@"gameplay_validated":@NO,@"latency_target_validated":@NO,
+        @"restart_required":@NO} mutableCopy];
+    NSUInteger samples=0,repetitions=0;
+    if(!BoundedInteger(config[@"fp8_sample_count"],3,3,15,&samples) ||
+       !BoundedInteger(config[@"fp8_repetitions_per_sample"],8,1,128,&repetitions)){
+        receipt[@"reason"]=@"Use 3–15 samples and 1–128 repetitions for the optional operator test.";return receipt;
+    }
+    receipt[@"configuration"]=@{@"sample_count":@(samples),@"repetitions_per_sample":@(repetitions)};
+#if defined(NETAL_IOS_FP8_LAB) && NETAL_IOS_FP8_LAB
+    NSDictionary* identity=NSBundle.mainBundle.infoDictionary[@"NetalFP8LabIdentity"];
+    NSURL* library=[NSBundle.mainBundle URLForResource:@"netal_fp8_lab" withExtension:@"metallib"];
+    NSData* libraryData=library?[NSData dataWithContentsOfURL:library]:nil;
+    if(![identity isKindOfClass:NSDictionary.class] || !libraryData){
+        receipt[@"reason"]=@"The optional operator library or its build identity is missing.";return receipt;
+    }
+    NSString* actualHash=SHA(libraryData.bytes,libraryData.length);
+    receipt[@"lab_build_identity"]=identity;receipt[@"actual_metallib_sha256"]=actualHash;
+    if(![actualHash isEqual:identity[@"metallib_sha256"]]){
+        receipt[@"reason"]=@"The optional operator library does not match this app's build identity.";return receipt;
+    }
+    if(stopFlag->load()!=0 || NSProcessInfo.processInfo.thermalState==NSProcessInfoThermalStateCritical){
+        receipt[@"state"]=@"incomplete";receipt[@"reason"]=@"Stopped before the next graphics test.";return receipt;
+    }
+    if(@available(iOS 27.0,*)){
+        progress(@"Running the optional graphics test…");
+        NSError* error=nil;const auto start=Clock::now();
+        NSDictionary* result=NetalRunFP8MatmulLabWithStop(device,library,samples,repetitions,^BOOL{
+            return stopFlag->load()!=0;
+        },&error);
+        receipt[@"lab_completion_wall_ms"]=@(Elapsed(start));receipt[@"thermal_end"]=Thermal();
+        receipt[@"memory_footprint_end_bytes"]=Footprint();
+        if(!result){
+            NSString* reason=error.localizedDescription?:@"The optional test did not produce a validated result.";
+            const BOOL timeout=[reason.lowercaseString containsString:@"timeout"];
+            receipt[@"state"]=timeout?@"failed":(stopFlag->load()!=0?@"incomplete":@"unavailable");
+            receipt[@"restart_required"]=@(timeout);receipt[@"reason"]=reason;return receipt;
+        }
+        receipt[@"operator_lab"]=result;
+        const BOOL passed=[result[@"state"] isEqual:@"synthetic_operator_pass"];
+        receipt[@"operator_execution_validated"]=@(passed);
+        receipt[@"state"]=passed?(stopFlag->load()!=0?@"incomplete":@"completed_operator_lab"):@"unavailable";
+        receipt[@"reason"]=passed?@"Graphics operator test finished. These results cover synthetic matrix operations, not a running game.":
+            @"The optional test did not produce a validated result.";
+        return receipt;
+    }
+    receipt[@"reason"]=@"The optional operator test requires iOS 27 or newer.";
+#else
+    (void)device;(void)progress;(void)stopFlag;
+    receipt[@"reason"]=@"The optional operator test is not included in this app build.";
+#endif
+    return receipt;
+}
+
+NSMutableDictionary* RunMetalFXComparison(NSDictionary* base,NSDictionary* config,NSString* mode,id<MTLDevice> device,
+    void (^progress)(NSString*),std::shared_ptr<std::atomic<int>> stopFlag) {
+    NSMutableDictionary* receipt=[@{@"schema":@"netal.ios.metalfx-request.v1",@"state":@"unavailable",
+        @"probe_mode":mode,@"scope":@"requested optional model-free system-scaler comparison",
+        @"execution_smoke_validated":@NO,@"gpu_timing_validated":@NO,@"gameplay_validated":@NO,
+        @"netal_model_allocated":@NO,@"apple_internal_architecture_known":@NO} mutableCopy];
+    NSString* selected=[mode isEqual:@"metalfx_spatial"]?@"spatial":@"temporal";
+    if(config[@"metalfx_mode"]&&![config[@"metalfx_mode"] isEqual:selected]){
+        receipt[@"reason"]=@"The selected system-scaler mode conflicts with metalfx_mode.";return receipt;
+    }
+#if defined(NETAL_IOS_METALFX_LAB) && NETAL_IOS_METALFX_LAB
+    NSDictionary* identity=NSBundle.mainBundle.infoDictionary[@"NetalMetalFXLabIdentity"];
+    if(![identity isKindOfClass:NSDictionary.class]){
+        receipt[@"reason"]=@"The optional system-scaler comparison build identity is missing.";return receipt;
+    }
+    NSMutableDictionary* options=[config mutableCopy];options[@"metalfx_mode"]=selected;
+    progress(@"Running the system graphics comparison…");NSError* error=nil;
+    NSDictionary* result=NetalRunMetalFXLabWithStop(device,options,^BOOL{return stopFlag->load()!=0;},&error);
+    if(result)receipt=[result mutableCopy];
+    else receipt[@"reason"]=error.localizedDescription?:@"The optional comparison did not return a result.";
+    receipt[@"metalfx_lab_build_identity"]=identity;
+#else
+    (void)device;(void)progress;(void)stopFlag;
+    receipt[@"reason"]=@"The optional system-scaler comparison is not included in this app build.";
+#endif
+    receipt[@"probe_mode"]=mode;receipt[@"probe_source_sha256"]=base[@"probe_source_sha256"];
+    receipt[@"started_utc"]=base[@"started_utc"];receipt[@"device_hardware"]=base[@"hardware"];
+    receipt[@"cleared_sr_environment_keys"]=base[@"cleared_sr_environment_keys"];
+    return receipt;
 }
 
 NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::atomic<int>> stopFlag) {
@@ -161,6 +266,14 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
         @"scope":@"SR temporal buffer-to-buffer; boundary transforms, model, history and output included",
         @"excludes":@[@"game rendering",@"texture import/export",@"presentation",@"CPU procedural input generation"],
         @"stimulus":@"procedural translating HDR plane; current-to-previous motion; inverted depth; exposure=1; 18-phase jitter",
+        @"stimulus_contract":@{@"version":@2,@"cycles_u":@(netal_probe::kPlaneCyclesU),
+            @"cycles_v":@(netal_probe::kPlaneCyclesV),@"velocity_u_per_frame":@(netal_probe::kPlaneVelocityU),
+            @"velocity_v_per_frame":@0,@"pixel_centers":@YES,@"jitter_units":@"input pixels",
+            @"jitter_world_normalization":@"jitter_x/input_width, jitter_y/input_height",
+            @"motion_units":@"normalized current-to-previous UV, without jitter",
+            @"jitter_sequence":@"existing accepted 18-phase sequence",@"jitter_phase_count":@18,
+            @"nvidia_preset_validated":@NO,@"nvidia_optimal_settings_api_implemented":@NO},
+        @"probe_source_sha256":NSBundle.mainBundle.infoDictionary[@"NetalProbeSourceSHA256"]?:NSNull.null,
         @"cpu_work_scope":@"CPU encode includes session encoding only; completion wall includes encode, submit and callback wait. Procedural input generation, output validation, hashing and receipt writes are excluded; this serial probe is not gameplay throughput.",
         @"output_poison_half_bits":@"0x7e00",
         @"rtx_parity_validated":@NO,@"visual_quality_validated":@NO,@"gameplay_validated":@NO,
@@ -181,12 +294,27 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
         [clearedEnvironment addObject:key];unsetenv(key.UTF8String);
     }
     receipt[@"cleared_sr_environment_keys"]=[clearedEnvironment sortedArrayUsingSelector:@selector(compare:)];
+    NSURL* configURL=[Documents() URLByAppendingPathComponent:@"benchmark.json"];
+    NSDictionary* config=JSON(configURL);
+    if([NSFileManager.defaultManager fileExistsAtPath:configURL.path] && !config)
+        return fail(@"benchmark.json is not a JSON object.");
+    config=config?:@{};
+    id probeMode=config[@"probe_mode"]?:@"sr";
+    if(![@[@"sr",@"fp8_lab",@"metalfx_spatial",@"metalfx_temporal"] containsObject:probeMode])return fail(@"Unknown test mode in benchmark.json.");
+    receipt[@"probe_mode"]=probeMode;
+    const BOOL metalfxMode=[probeMode isEqual:@"metalfx_spatial"]||[probeMode isEqual:@"metalfx_temporal"];
+    const BOOL captureBuild=[NSBundle.mainBundle.infoDictionary[@"MetalCaptureEnabled"] boolValue];
+    receipt[@"metal_capture_enabled_build"]=@(captureBuild);
+    if(captureBuild&&!metalfxMode)return fail(@"This dedicated capture build cannot run ordinary performance tests. Select a system-scaler capture or use a performance build.");
     id<MTLDevice> device=MTLCreateSystemDefaultDevice();
     NetalIOSSRCapabilities* capability=[NetalIOSSRCapabilities capabilitiesForDevice:device];
     receipt[@"hardware"]=@{@"gpu":device.name?:@"unavailable",@"chip":capability.chipName,
         @"eligible":@(capability.eligible),@"reason":capability.reason,
         @"neural_accelerator_candidate":@(capability.supportsNeuralAccelerators),
         @"fp8_tensor_allocation_supported":@(capability.supportsFP8TensorTypes)};
+    // Select the separately built, model-free experiment before looking for any SR model files.
+    if([probeMode isEqual:@"fp8_lab"])return RunOperatorLab(receipt,config,device,progress,stopFlag);
+    if(metalfxMode)return RunMetalFXComparison(receipt,config,probeMode,device,progress,stopFlag);
     if(!capability.eligible)return fail(capability.reason);
     NSURL* root=[Documents() URLByAppendingPathComponent:@"runtime" isDirectory:YES];
     NSDictionary* manifest=JSON([root URLByAppendingPathComponent:@"manifest.json"]);
@@ -194,32 +322,61 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
     if(![manifest[@"schema"] isEqual:@"netal.sr.runtime.v2"] || ![manifest[@"model"] isEqual:@"DLSS_SR_Feature1_Quality_K"])
         return fail(@"This probe requires the supported DLSS 4 K runtime. DLSS 4.5 is unavailable.");
     if(![manifest[@"files"] isKindOfClass:NSArray.class])return fail(@"The runtime asset inventory is missing.");
+    NSMutableDictionary* ledger=[NSMutableDictionary dictionary];
+    for(id raw in manifest[@"files"])if([raw isKindOfClass:NSDictionary.class]&&[raw[@"path"] isKindOfClass:NSString.class])ledger[raw[@"path"]]=raw;
     NSMutableArray* modelAssets=[NSMutableArray array];
     for(id item in manifest[@"files"])if([item isKindOfClass:NSDictionary.class] &&
         [item[@"path"] isKindOfClass:NSString.class] && [item[@"path"] hasPrefix:@"model/"])
         [modelAssets addObject:item];
     receipt[@"model"]=@{@"name":manifest[@"model"],@"asset_root_sha256":manifest[@"asset_root_sha256"]?:NSNull.null,
         @"assets":modelAssets,@"identity_validated":@NO};
-    NSURL* configURL=[Documents() URLByAppendingPathComponent:@"benchmark.json"];
-    NSDictionary* config=JSON(configURL);
-    if([NSFileManager.defaultManager fileExistsAtPath:configURL.path] && !config)
-        return fail(@"benchmark.json is not a JSON object.");
-    config=config?:@{};
     bool saveLastOutput=false;
     if(!netal_probe::ReadOptionalBoolean(config[@"save_last_output"],false,&saveLastOutput))
         return fail(@"save_last_output must be a JSON boolean (true or false).");
+    bool fastInputBoundary=false,fastOutputBoundary=false;NSUInteger outputRepeat=1;
+    if(!netal_probe::ReadOptionalBoolean(config[@"fast_input_boundary"],false,&fastInputBoundary))
+        return fail(@"fast_input_boundary must be a JSON boolean (true or false).");
+    if(!netal_probe::ReadOptionalBoolean(config[@"fast_output_boundary"],false,&fastOutputBoundary))
+        return fail(@"fast_output_boundary must be a JSON boolean (true or false).");
+    if(!BoundedInteger(config[@"diagnostic_output_repeat"],1,1,8,&outputRepeat))
+        return fail(@"diagnostic_output_repeat must be an integer from 1 to 8, not a boolean.");
+    const NSUInteger previousRepeat=gFirstEncodedOutputRepeat.load();
+    if(previousRepeat&&previousRepeat!=outputRepeat)
+        return fail(@"Close and reopen the app before changing diagnostic_output_repeat; Core caches it for the process.",YES);
+    if(fastInputBoundary&&(!netal_probe::FP8Hex(ledger[@"metallib/hiluma_input_depthinv.metallib"][@"sha256"])||
+       ![NSFileManager.defaultManager fileExistsAtPath:[root URLByAppendingPathComponent:@"metallib/hiluma_input_depthinv.metallib"].path]))
+        return fail(@"The fast input-boundary candidate needs its manifest-pinned library.");
+    if(fastOutputBoundary&&(!netal_probe::FP8Hex(ledger[@"metallib/hiluma_output_depthinv_fast.metallib"][@"sha256"])||
+       ![NSFileManager.defaultManager fileExistsAtPath:[root URLByAppendingPathComponent:@"metallib/hiluma_output_depthinv_fast.metallib"].path]))
+        return fail(@"The fast output-boundary candidate needs its manifest-pinned library.");
     receipt[@"side_output"]=saveLastOutput?
         @{@"requested":@YES,@"state":@"unavailable",@"reason":@"No completed output was saved."}:
         @{@"requested":@NO,@"state":@"disabled"};
     NSString* profile=config[@"profile"]?:@"1280x720";
+    id renderValue=config[@"render_size"];
+    netal_probe::Dimensions requestedOutput,requestedRender;
+    auto parseSize=[](id value,netal_probe::Dimensions* dimensions){
+        if(![value isKindOfClass:NSString.class])return false;
+        NSString* text=value;
+        return netal_probe::ParseSize(std::string_view(text.UTF8String,[text lengthOfBytesUsingEncoding:NSUTF8StringEncoding]),dimensions);
+    };
+    if(!parseSize(profile,&requestedOutput) || requestedOutput.width<10 || requestedOutput.height<10 ||
+       requestedOutput.width>9999 || requestedOutput.height>9999)
+        return fail(@"Use a supported output profile such as 1280x720.");
+    if(renderValue && (!parseSize(renderValue,&requestedRender) || !netal_probe::RenderFitsOutput(requestedRender,requestedOutput)))
+        return fail(@"render_size must be positive WxH, no larger than the output, with an aspect ratio within 1% of the output.");
     NSString* backend=config[@"backend"]?:@"batched";
     if([backend isEqual:@"mpp"])backend=@"mpp-candidate";
     NSString* api=config[@"metal_api"]?:@"metal4";
-    NSRegularExpression* size=[NSRegularExpression regularExpressionWithPattern:@"^[1-9][0-9]{1,3}x[1-9][0-9]{1,3}$" options:0 error:nil];
-    if(![profile isKindOfClass:NSString.class] || [size numberOfMatchesInString:profile options:0 range:NSMakeRange(0,profile.length)]!=1)
-        return fail(@"Use a supported output profile such as 1280x720.");
-    if(![@[@"reference",@"batched",@"mpp-candidate"] containsObject:backend] ||
+    if(![@[@"reference",@"batched",@"mpp-candidate",@"fp8-candidate"] containsObject:backend] ||
        ![@[@"metal3",@"metal4"] containsObject:api])return fail(@"Unknown backend or Metal API in benchmark.json.");
+    const BOOL fp8Candidate=[backend isEqual:@"fp8-candidate"];
+    if(fp8Candidate){
+        if(@available(iOS 27.0,*)){
+            if(![capability.chipName isEqual:@"A20 Pro"]||!capability.supportsFP8TensorTypes)
+                return fail(@"This mixed-precision candidate requires A20 Pro and working FP8 tensor allocation.");
+        }else return fail(@"This mixed-precision candidate requires iOS 27 or newer.");
+    }
     NSUInteger warmup=0,measured=0;
     if(!BoundedInteger(config[@"warmup_frames"],3,1,16,&warmup) ||
        !BoundedInteger(config[@"measured_frames"],60,1,600,&measured))
@@ -230,9 +387,18 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
     unsetenv("NEURALSTUDIO_SR_PWIN_SUFFIX");
     unsetenv("NEURALSTUDIO_SR_PROFILE_SYNTHESIZE");
     unsetenv("NEURALSTUDIO_SR_RENDER");
+    if(renderValue)setenv("NEURALSTUDIO_SR_RENDER",[(NSString*)renderValue UTF8String],1);
+    if(fp8Candidate)setenv("NEURALSTUDIO_SR_METAL3_SHARED_ENCODER","1",1);
+    if(fastInputBoundary)setenv("NEURALSTUDIO_SR_DEPTH_INPUT_LIBRARY","hiluma_input_depthinv",1);
+    if(fastOutputBoundary)setenv("NEURALSTUDIO_SR_DEPTH_OUTPUT_LIBRARY","hiluma_output_depthinv_fast",1);
+    setenv("NEURALSTUDIO_SR_OUTPUT_REPEAT",[@(outputRepeat).stringValue UTF8String],1);
     receipt[@"configuration"]=@{@"profile":profile,@"requested_backend":backend,@"metal_api":api,
         @"warmup_frames":@(warmup),@"measured_frames":@(measured),@"serial_single_in_flight":@YES,
         @"save_last_output":@(saveLastOutput),
+        @"render_size":renderValue?:NSNull.null,
+        @"ordered_dispatches":@YES,@"metal3_shared_encoder_explicitly_forced":@(fp8Candidate),
+        @"fast_input_boundary":@(fastInputBoundary),@"diagnostic_output_repeat":@(outputRepeat),
+        @"fast_output_boundary":@(fastOutputBoundary),
         @"per_frame_timeout_seconds":@30,@"run_deadline_seconds":@180};
     progress(@"Preparing the model…");
     NSError* error=nil;
@@ -240,10 +406,42 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
     NeuralStudioDLSSSRSession* session=[[NeuralStudioDLSSSRSession alloc] initWithDevice:device runtimeBundleURL:root error:&error];
     receipt[@"cold_prepare_wall_ms"]=@(Elapsed(prepareStart));
     if(!session)return fail([@"The runtime could not be prepared: " stringByAppendingString:error.localizedDescription?:@"unknown error"]);
+    const BOOL inputSelectionKnown=[session respondsToSelector:@selector(depthInputLibraryName)];
+    const BOOL outputSelectionKnown=[session respondsToSelector:@selector(depthOutputLibraryName)];
+    NSString* actualInput=inputSelectionKnown?session.depthInputLibraryName:nil;
+    NSString* actualOutput=outputSelectionKnown?session.depthOutputLibraryName:nil;
+    auto libraryReceipt=[&](NSString* actual,NSString* requested){
+        NSString* path=actual.length?[NSString stringWithFormat:@"metallib/%@.metallib",actual]:nil;
+        id hash=path?ledger[path][@"sha256"]:nil;
+        return @{@"requested":requested,@"actual":actual?:static_cast<id>(NSNull.null),
+            @"sha256":hash?:NSNull.null,@"selection_verified":@(actual.length>0&&netal_probe::FP8Hex(hash))};
+    };
+    receipt[@"boundary_libraries"]=@{@"input":libraryReceipt(actualInput,fastInputBoundary?@"hiluma_input_depthinv":@"bundle_default"),
+        @"output":libraryReceipt(actualOutput,fastOutputBoundary?@"hiluma_output_depthinv_fast":@"bundle_default")};
+    if((actualInput.length&&!netal_probe::FP8Hex(ledger[[NSString stringWithFormat:@"metallib/%@.metallib",actualInput]][@"sha256"]))||
+       (actualOutput.length&&!netal_probe::FP8Hex(ledger[[NSString stringWithFormat:@"metallib/%@.metallib",actualOutput]][@"sha256"])))
+        return fail(@"Core selected a boundary library missing from the pinned runtime inventory.");
+    if(fastInputBoundary&&inputSelectionKnown&&![actualInput isEqual:@"hiluma_input_depthinv"])
+        return fail(@"Core did not select the requested fast input-boundary candidate.");
+    if(fastOutputBoundary&&(!outputSelectionKnown||![actualOutput isEqual:@"hiluma_output_depthinv_fast"]))
+        return fail(@"Core did not verify selection of the requested fast output-boundary candidate.");
+    receipt[@"profiling_only"]=@(outputRepeat>1);receipt[@"normal_sr_latency_sample"]=@(outputRepeat==1);
+    if(outputRepeat>1)receipt[@"scope"]=@"diagnostic SR buffer-to-buffer run with repeated output passes; not normal SR latency";
     receipt[@"model"]=@{@"name":manifest[@"model"],@"asset_root_sha256":session.runtimeBundleRoot,
         @"assets":modelAssets,@"identity_validated":@YES};
     receipt[@"geometry"]=@{@"input_width":@(session.inputWidth),@"input_height":@(session.inputHeight),
-        @"output_width":@(session.outputWidth),@"output_height":@(session.outputHeight)};
+        @"output_width":@(session.outputWidth),@"output_height":@(session.outputHeight),
+        @"input_to_output_x":@(static_cast<double>(session.inputWidth)/session.outputWidth),
+        @"input_to_output_y":@(static_cast<double>(session.inputHeight)/session.outputHeight),
+        @"output_to_input_x":@(static_cast<double>(session.outputWidth)/session.inputWidth),
+        @"output_to_input_y":@(static_cast<double>(session.outputHeight)/session.inputHeight),
+        @"input_to_output_pixel_fraction":@(static_cast<double>(session.inputWidth)*session.inputHeight/(static_cast<double>(session.outputWidth)*session.outputHeight))};
+    receipt[@"requested_geometry"]=@{@"output_width":@(requestedOutput.width),@"output_height":@(requestedOutput.height),
+        @"input_width":renderValue?static_cast<id>(@(requestedRender.width)):NSNull.null,
+        @"input_height":renderValue?static_cast<id>(@(requestedRender.height)):NSNull.null};
+    if(session.outputWidth!=requestedOutput.width || session.outputHeight!=requestedOutput.height ||
+       (renderValue&&(session.inputWidth!=requestedRender.width || session.inputHeight!=requestedRender.height)))
+        return fail(@"The runtime geometry does not match the requested input/output sizes. No frames were submitted.");
     receipt[@"pipeline_layers"]=@{@"total":@(session.pipelineLayersTotal),@"present":@(session.pipelineLayersPresent),
         @"missing":session.pipelineLayersMissing,@"fallback_visible":@YES};
     // Record exactly what the selected profile advertises. Loaded layer count above detects missing
@@ -255,12 +453,59 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
     receipt[@"geometry_synthesized"]=@(synthesized);
     receipt[@"selected_pipeline_directory"]=pipelinePrefix;
     BOOL sawMPP=NO,sawSIMD=NO;
+    NSMutableDictionary* fp8Tensors=[NSMutableDictionary dictionary];
+    NSMutableDictionary* fp8ExpectedPaths=[NSMutableDictionary dictionary];
+    NSMutableDictionary* fp8FrameCounts=[NSMutableDictionary dictionary];
+    NSMutableDictionary* frameDispatchCounts=[NSMutableDictionary dictionary];
+    NSMutableSet* fp8AuditedPaths=[NSMutableSet set];
+    NSDictionary* fp8Pack=nil;NSString* fp8Root=nil;
+    NSDictionary* geometryManifest=JSON([root URLByAppendingPathComponent:[profilePrefix stringByAppendingString:@"manifest.json"]]);
+    NSDictionary* profileArenas=geometryManifest[@"arenas"];
+    NSDictionary* fp8Arenas=@{@"arena6":profileArenas[@"6"]?:@0,@"arena7":profileArenas[@"7"]?:@0,@"arena8":profileArenas[@"8"]?:@0};
+    for(NSString* stage in @[@"enc0",@"enc1",@"enc2",@"enc3",@"enc4",@"dec5",@"dec4",@"dec3",@"dec2",@"dec1",@"dec0"]){
+        frameDispatchCounts[stage]=@1; // The transpiled per-window layer is one dispatch when no batched sidecar exists.
+        fp8ExpectedPaths[[pipelinePrefix stringByAppendingFormat:@"dltss_pwin_%@_layer.json",stage]]=stage;
+        if([@[@"enc3",@"enc4",@"dec5",@"dec4",@"dec3"] containsObject:stage])for(NSUInteger phase=1;phase<8;++phase)
+            fp8ExpectedPaths[[pipelinePrefix stringByAppendingFormat:@"dltss_pwin_%@_layer.phase%lu.json",stage,static_cast<unsigned long>(phase)]]=stage;
+    }
+    if(fp8Candidate){
+        fp8Pack=JSON([root URLByAppendingPathComponent:@"pipeline/fp8/pack.json"]);fp8Root=fp8Pack[@"pack_root_sha256"];
+        if(!ledger[@"pipeline/fp8/pack.json"]||![fp8Pack[@"schema"] isEqual:@"netal.sr.quantized-pack.v1"]||
+           ![fp8Pack[@"source_model"] isEqual:@"DLSS_SR_Feature1_Quality_K"]||!netal_probe::FP8Hex(fp8Root)||
+           !netal_probe::FP8Bool(fp8Pack[@"derived_approximate"],true)||!netal_probe::FP8Bool(fp8Pack[@"dlss45"],false)||
+           ![fp8Pack[@"files"] isKindOfClass:NSArray.class]||![fp8Pack[@"tensors"] isKindOfClass:NSArray.class])
+            return fail(@"The mixed-precision candidate needs its manifest-pinned, supported pack.json.");
+        for(id raw in fp8Pack[@"files"]){
+            if(![raw isKindOfClass:NSDictionary.class])return fail(@"Invalid FP8 pack inventory.");
+            NSDictionary* row=raw;NSDictionary* pinned=ledger[row[@"path"]];
+            if(!pinned||![pinned[@"bytes"] isEqual:row[@"bytes"]]||![pinned[@"sha256"] isEqual:row[@"sha256"]])
+                return fail(@"FP8 pack payload inventory disagrees with the validated runtime.");
+        }
+        for(id raw in fp8Pack[@"tensors"]){
+            if(![raw isKindOfClass:NSDictionary.class])return fail(@"Invalid FP8 tensor metadata.");
+            NSDictionary* tensor=raw;NSString* identity=tensor[@"id"];
+            if(![identity isKindOfClass:NSString.class]||fp8Tensors[identity])return fail(@"Duplicate FP8 tensor identity.");
+            fp8Tensors[identity]=tensor;
+        }
+    }
     BOOL allMPPDescriptorsValid=YES;NSUInteger mppGEMMs=0;
     NSMutableSet* auditedMPPPaths=[NSMutableSet set];
     for(NSDictionary* item in manifest[@"files"]) {
         NSString* path=item[@"path"];
         if(![path hasPrefix:pipelinePrefix] || ![path hasSuffix:@".json"])continue;
         NSDictionary* sidecar=JSON([root URLByAppendingPathComponent:path]);
+        NSString* graphLayer=fp8ExpectedPaths[path];
+        if(![backend isEqual:@"reference"]&&graphLayer&&[sidecar[@"dispatches"] isKindOfClass:NSArray.class]&&
+           [sidecar[@"dispatches"] count]>[frameDispatchCounts[graphLayer] unsignedIntegerValue])
+            frameDispatchCounts[graphLayer]=@([sidecar[@"dispatches"] count]);
+        if(fp8Candidate){
+            NSString* layer=fp8ExpectedPaths[path];
+            if(!layer)return fail(@"Unexpected sidecar in the selected mixed-precision profile.");
+            NSDictionary* checked=netal_probe::AuditFP8Descriptor(sidecar,layer,ledger,fp8Tensors,fp8Arenas,fp8Root);
+            if(![checked[@"validated"] boolValue])return fail([@"Mixed-precision sidecar audit failed: " stringByAppendingString:checked[@"reason"]]);
+            [fp8AuditedPaths addObject:path];
+            if([sidecar[@"dispatches"] count]>[fp8FrameCounts[layer] unsignedIntegerValue])fp8FrameCounts[layer]=@([sidecar[@"dispatches"] count]);
+        }
         NSString* mode=[sidecar[@"gemm_backend"] isKindOfClass:NSString.class]?sidecar[@"gemm_backend"]:@"unspecified";
         if([mode containsString:@"mpp"])sawMPP=YES;else sawSIMD=YES;
         NSUInteger gemms=0;const BOOL checked=MPPDescriptorValid(sidecar,&gemms);
@@ -281,6 +526,31 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
         (session.pipelineLayersPresent!=session.pipelineLayersTotal?@"mixed_pipeline_and_reference_fallback":
         (sawMPP?(sawSIMD?@"mixed_mpp_and_other_pipeline_candidates":@"mpp_pipeline_candidate"):@"batched_pipeline_candidate"));
     receipt[@"backend_dispatch_verified"]=@NO;
+    NSUInteger baselineDispatches=3;for(NSNumber* count in frameDispatchCounts.allValues)baselineDispatches+=count.unsignedIntegerValue;
+    if(!netal_probe::DispatchRingFits(baselineDispatches,outputRepeat))
+        return fail(@"The requested output-repeat diagnostic exceeds the 160-entry frame dispatch ring.");
+    receipt[@"dispatch_ring_bound"]=@{@"baseline_maximum_dispatches":@(baselineDispatches),@"output_repeat":@(outputRepeat),
+        @"maximum_dispatches":@(baselineDispatches+outputRepeat-1),@"capacity":@160,@"verified_from_selected_descriptors":@YES};
+    if(fp8Candidate){
+        NSUInteger pwinDispatches=0;for(NSNumber* count in fp8FrameCounts.allValues)pwinDispatches+=count.unsignedIntegerValue;
+        if(fp8AuditedPaths.count!=46||session.pipelineLayersPresent!=11||session.pipelineLayersTotal!=11||
+           pwinDispatches!=134||pwinDispatches+3>=160)return fail(@"Incomplete mixed-precision layer/phase coverage or dispatch ring overflow.");
+        receipt[@"backend_mode"]=@"mixed_fp8_e4m3_with_sensitive_fp16_and_half_mlps";
+        receipt[@"fp8_candidate"]=@{@"selected_descriptors_validated":@YES,@"library":@"pwin_mpp_all",
+            @"validation_scope":@"all-dispatch structural base bounds and transformed FP8/FP16/MLP operand spans; original operator semantics remain offline-verified",
+            @"general_shader_memory_safety_proven":@NO,@"original_operator_semantics_verified_on_device":@NO,
+            @"coverage_basis":@"validated selected descriptor graph; hardware instructions are not inspected",
+            @"library_sha256":ledger[@"metallib/pwin_mpp_all.metallib"][@"sha256"]?:NSNull.null,
+            @"pack_root_sha256":fp8Root,@"pack_manifest_sha256":ledger[@"pipeline/fp8/pack.json"][@"sha256"],
+            @"profile_sidecars":@(fp8AuditedPaths.count),@"layers":@11,@"fp8_gemms_per_frame":@40,
+            @"gpu_row_quantizers_per_frame":@40,@"sensitive_fp16_gemms_per_frame":@2,@"half_mlps_per_frame":@6,
+            @"pwin_dispatches_per_frame":@(pwinDispatches),@"boundary_dispatches_per_frame":@3,
+            @"diagnostic_extra_output_dispatches_per_frame":@(outputRepeat-1),
+            @"maximum_total_dispatches_per_frame":@(pwinDispatches+3+outputRepeat-1),@"requires_ordered_dispatches":@YES,
+            @"original_k16_handoffs_preserved":@NO,@"candidate_approximate":@YES,
+            @"pack_derivation_verified_on_device":@NO,@"native_fp8_instruction_verified":@NO,
+            @"remaining_arithmetic":@"2 sensitive FP16 GEMMs, 6 half MLPs, and other FP16/FP32 operators"};
+    }
     receipt[@"mpp_selected_descriptors_validated"]=@(allMPPDescriptorsValid&&mppGEMMs>0);
     receipt[@"mpp_descriptor_gemm_dispatches"]=@(mppGEMMs);
     if([backend isEqual:@"mpp-candidate"] && (!sawMPP || !allMPPDescriptorsValid || session.pipelineLayersPresent!=11 || session.pipelineLayersPresent!=session.pipelineLayersTotal))
@@ -344,6 +614,7 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
         if(metal4){[command4 beginCommandBufferWithAllocator:allocator];[command4 useResidencySet:residency];}
         const auto wallStart=Clock::now();const auto encodeStart=Clock::now();
         const BOOL reset=frame==0;
+        NSUInteger unseen=0;gFirstEncodedOutputRepeat.compare_exchange_strong(unseen,outputRepeat);
         const BOOL encoded=metal4?
             [session encodeFrameToMTL4CommandBuffer:command4 colorBuffer:color colorOffset:0 motionBuffer:motion motionOffset:0 depthBuffer:depth depthOffset:0 exposureBuffer:exposure exposureOffset:0 outputBuffer:output outputOffset:kGuard jitterOffsetX:jitter[0] jitterOffsetY:jitter[1] motionVectorScaleX:session.inputWidth motionVectorScaleY:session.inputHeight reset:reset depthReversed:YES error:&error]:
             [session encodeFrameToCommandBuffer:command colorBuffer:color colorOffset:0 motionBuffer:motion motionOffset:0 depthBuffer:depth depthOffset:0 exposureBuffer:exposure exposureOffset:0 outputBuffer:output outputOffset:kGuard jitterOffsetX:jitter[0] jitterOffsetY:jitter[1] motionVectorScaleX:session.inputWidth motionVectorScaleY:session.inputHeight reset:reset depthReversed:YES error:&error];
@@ -410,6 +681,9 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
     receipt[@"state"]=timingsValid?@"completed":@"completed_timing_unavailable";
     receipt[@"reason"]=timingsValid?@"Finished. These timings cover the SR model test, not a running game.":
         @"Finished, but the driver did not provide valid GPU timings. No latency result is available.";
+    if(outputRepeat>1)receipt[@"reason"]=timingsValid?
+        @"Diagnostic test finished. GPU timings include repeated output passes and are not ordinary SR latency.":
+        @"Diagnostic test finished, but valid GPU timestamps are unavailable.";
     // The optional snapshot is independent of execution/timing validity and all latency samples.
     if(saveLastOutput)receipt[@"side_output"]=SaveCompletedOutput(output,outputBytes,frames.lastObject);
     return receipt;
@@ -427,7 +701,7 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
 - (void)viewDidLoad {
     [super viewDidLoad];self.view.backgroundColor=UIColor.systemBackgroundColor;
     UILabel* title=[UILabel new];title.text=@"Netal performance test";title.font=[UIFont preferredFontForTextStyle:UIFontTextStyleTitle1];title.numberOfLines=0;
-    self.status=[UILabel new];self.status.numberOfLines=0;self.status.text=@"Tests your local upscaling model. Add the supported runtime to Documents/runtime, then tap Run. This can take a few minutes.";
+    self.status=[UILabel new];self.status.numberOfLines=0;self.status.text=@"Tests graphics performance on your phone using your selected setup. Tap Run to begin. This can take a few minutes.";
     self.runButton=[UIButton buttonWithType:UIButtonTypeSystem];[self.runButton setTitle:@"Run" forState:UIControlStateNormal];
     [self.runButton addTarget:self action:@selector(runTest) forControlEvents:UIControlEventTouchUpInside];
     [NSNotificationCenter.defaultCenter addObserver:self selector:@selector(stopForInactiveApp:) name:UIApplicationWillResignActiveNotification object:nil];
@@ -443,7 +717,7 @@ NSMutableDictionary* RunProbe(void (^progress)(NSString*),std::shared_ptr<std::a
 }
 - (void)dealloc {[NSNotificationCenter.defaultCenter removeObserver:self];}
 - (void)runTest {
-    if(self.running){if(_stopFlag)_stopFlag->store(1);self.status.text=@"Finishing the current frame…";self.runButton.enabled=NO;return;}
+    if(self.running){if(_stopFlag)_stopFlag->store(1);self.status.text=@"Finishing the current step…";self.runButton.enabled=NO;return;}
     self.running=YES;self.runButton.enabled=YES;[self.runButton setTitle:@"Cancel" forState:UIControlStateNormal];
     UIApplication.sharedApplication.idleTimerDisabled=YES;
     _stopFlag=std::make_shared<std::atomic<int>>(0);const auto stopFlag=_stopFlag;
