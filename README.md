@@ -39,6 +39,10 @@ describes the runtime work and includes Resident Evil footage.
 
 - Native SR session, model layouts/repacking, reference and accelerated body code,
   boundary/texture kernels, and explicit-input local bundle assembly.
+- Experimental [native iOS SR library and test app](docs/IOS_SR.md), restricted
+  to physical A19 Pro/A20 Pro devices, with an opt-in approximate MPP backend.
+  This uses the supported DLSS 4 Preset K model; DLSS 4.5 and game integration
+  are not validated by this port.
 - Native FG runtime, 73 shader build variants, Metal 3/4 integration, game
   adapters and full-resolution compositing.
 - arm64 native-game and x86_64 CrossOver bridges, launch/import helpers, and the

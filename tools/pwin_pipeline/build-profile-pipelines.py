@@ -1,12 +1,23 @@
 """Generate the batched-pipeline JSONs for every resolution profile of the runtime bundle.
 Geometry per layer comes from the profile's arguments templates (+0 = W, +4 = H of the layer's token grid).
 Writes profiles/<WxH>/pipeline/<entry>.json (and the legacy root pipeline/ for 1920x1080); weights stay at
-the bundle root (pipeline/<layer>-weights.bin). usage: build-profile-pipelines.py [bundle]"""
+the bundle root (pipeline/<layer>-weights.bin). usage: build-profile-pipelines.py [bundle]
+Optional --gemm-backend mpp selects the approximate public TensorOps GEMM candidate;
+use a separate copied bundle with pwin_mpp_all.metallib. Reference remains the default."""
 import json, os, struct, subprocess, sys, tempfile
+from mpp_backend import convert_pipeline
 from pathlib import Path
 _argv = sys.argv[1:]
 _synth = None
 _layouts = None
+_backend = "reference"
+if "--gemm-backend" in _argv:
+    _i = _argv.index("--gemm-backend")
+    if _i + 1 >= len(_argv): raise SystemExit("--gemm-backend requires reference or mpp")
+    _backend = _argv[_i+1]
+    del _argv[_i:_i+2]
+    if _backend not in ("reference", "mpp"):
+        raise SystemExit("--gemm-backend must be reference or mpp")
 if "--layout-dir" in _argv:
     _i = _argv.index("--layout-dir")
     _layouts = Path(_argv[_i+1]).resolve()
@@ -78,14 +89,22 @@ def build_one(prof, base, out_dir, root_layout=False, profile_dir=None):
         for phase, shift in variants:
             with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp: out = tmp.name
             env = dict(os.environ, PWIN_W=str(W), PWIN_H=str(H), PWIN_MIXP_TGS="640", PWIN_PROFILE_DIR=profile_dir)
+            # Convert a canonical GEMM3 profile; never let a partially supported env
+            # override produce a mixed ABI in the explicitly selected MPP path.
+            if _backend == "mpp": env["PWIN_GEMM"] = "pwin_gemm3_tokens"
             if shift is not None: env["PWIN_PADX"], env["PWIN_PADY"] = str(shift[0]), str(shift[1])
             if _layouts is not None: env["PWIN_LAYOUT_FILE"] = str(_layouts / f"layout-{layer}.json")
             command = [sys.executable, str(Path(__file__).resolve().with_name(Path(cmd[1]).name))] + cmd[2:]
             r = subprocess.run(command + [out], env=env, capture_output=True, text=True)
             if r.returncode != 0: raise SystemExit(f"{prof} {layer} phase {phase}: {r.stderr}")
             q = json.load(open(out)); os.remove(out)
-            tune_nsplit(layer, q)
-            q["library"] = "pwin_all"; q["files"] = [{"name": "pweights", "path": f"pipeline/{layer}-weights.bin"}]
+            if _backend == "mpp":
+                try: q = convert_pipeline(q)
+                except ValueError as error: raise SystemExit(f"{prof} {layer} phase {phase}: {error}") from error
+            else:
+                tune_nsplit(layer, q)
+                q["library"] = "pwin_all"
+            q["files"] = [{"name": "pweights", "path": f"pipeline/{layer}-weights.bin"}]
             if phase not in (None, 0):
                 path = f"{out_dir}/{entry}.phase{phase}.json"
                 disabled_p = layer in ATTENTION

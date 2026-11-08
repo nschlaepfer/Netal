@@ -31,6 +31,12 @@ jobs:
           python3 scripts/build-netal-sr-reference-kernels.py --output "$RUNNER_TEMP/netal-sr-reference"
           python3 scripts/build-netal-sr-boundary-kernels.py --output "$RUNNER_TEMP/netal-sr-boundaries"
           python3 scripts/build-netal-sr-texture-kernels.py --output "$RUNNER_TEMP/netal-sr-textures"
+      - name: Compile experimental physical iOS SR and unsigned probe without models
+        run: |
+          python3 scripts/build-netal-ios-sr.py --output "$RUNNER_TEMP/netal-ios-sr" --sdk iphoneos --deployment-target 26.0 --kernels all
+          python3 scripts/build-netal-sr-mpp-kernels.py --output "$RUNNER_TEMP/netal-ios-mpp" --sdk iphoneos --deployment-target 26.0
+          python3 scripts/build-netal-sr-mpp-kernels.py --output "$RUNNER_TEMP/netal-ios-mpp-direct" --sdk iphoneos --deployment-target 26.0 --variant direct
+          python3 scripts/build-netal-ios-sr-probe.py --library-root "$RUNNER_TEMP/netal-ios-sr" --output "$RUNNER_TEMP/netal-ios-probe"
       - name: Link native and CrossOver bridges against source-built FG
         env:
           NEURALSTUDIO_FG_BUNDLE: ${{ runner.temp }}/netal-fg-engine

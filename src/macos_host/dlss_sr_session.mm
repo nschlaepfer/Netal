@@ -1,4 +1,8 @@
 #import "dlss_sr_session.h"
+#import <TargetConditionals.h>
+#if TARGET_OS_IOS
+#import "../ios_host/netal_ios_sr_capabilities.h"
+#endif
 #include "netal_sr_boundary_geometry.h"
 #include "netal_sr_runtime_manifest.h"
 
@@ -1141,6 +1145,15 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
     SetError(error, 22, @"Metal device unavailable");
     return nil;
   }
+#if TARGET_OS_IOS
+  // Mobile admission is independent of the existing Mac runtime. A capable GPU
+  // is only a candidate; the model, temporal contract and timings still need validation.
+  NetalIOSSRCapabilities* mobile = [NetalIOSSRCapabilities capabilitiesForDevice:device];
+  if (!mobile.isEligible) {
+    SetError(error, 1001, [@"Mobile SR unavailable: " stringByAppendingString:mobile.reason]);
+    return nil;
+  }
+#endif
   if (runtimeBundleURL == nil) {
     SetError(error, 23, @"runtime bundle URL unavailable");
     return nil;
