@@ -22,8 +22,8 @@ def valid_showcase_gif(data):
             and len(data) == SHOWCASE_GIF_IDENTITY['bytes']
             and hashlib.sha256(data).hexdigest() == SHOWCASE_GIF_IDENTITY['sha256'])
 
-ROOT_FILES = {'LICENSES/CuMetal-Apache-2.0.txt', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', '.gitignore', '.gitattributes', '.github/CODEOWNERS', '.github/rulesets/main.json'}
-DOCS = {'docs/FG_SOURCE_BUILD.md', 'docs/SR_BOUNDARY_KERNELS_AND_MATH.md', 'docs/SOURCE_PROVENANCE_REVIEW.md', 'docs/SR_BOUNDARY_METADATA.md', 'docs/SR_ARITHMETIC_MODES.md', 'docs/SR_SOURCE_BUILD.md', 'docs/MODEL_SETUP.md', 'docs/README.md', 'docs/getting-started.md', 'docs/RELEASE.md', 'docs/architecture.md',
+ROOT_FILES = {'LICENSES/CuMetal-Apache-2.0.txt', 'LICENSES/MLX-DLSS-Apache-2.0.txt', 'README.md', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'CONTRIBUTING.md', '.gitignore', '.gitattributes', '.github/CODEOWNERS', '.github/rulesets/main.json'}
+DOCS = {'docs/FG_SOURCE_BUILD.md', 'docs/NR_FAST_AND_ADAPTER.md', 'docs/SR_BOUNDARY_KERNELS_AND_MATH.md', 'docs/SOURCE_PROVENANCE_REVIEW.md', 'docs/SR_BOUNDARY_METADATA.md', 'docs/SR_ARITHMETIC_MODES.md', 'docs/SR_SOURCE_BUILD.md', 'docs/MODEL_SETUP.md', 'docs/README.md', 'docs/getting-started.md', 'docs/RELEASE.md', 'docs/architecture.md',
         'docs/roadmap.md', 'docs/menubar.md', 'docs/RUNTIME_BUNDLE.md', 'docs/performance.md', 'docs/REPOSITORY_GOVERNANCE.md', 'docs/PUBLIC_READINESS.md', 'docs/COMPLETE_SOURCE_BUILD.md', 'docs/STATUS.md'}
 EXTENSIONS = {'.swift', '.c', '.cc', '.cpp', '.h', '.hpp', '.mm', '.m', '.metal', '.py', '.sh',
               '.zsh', '.ps1', '.cmake', '.def', '.json', '.toml', '.txt', '.md'}
@@ -57,10 +57,10 @@ def allowed(path):
                           'netal-menubar-overview.png'} or path == SHOWCASE_GIF_PATH
     if path.startswith('src/macos_app/NetalMenuBar/Resources/'):
         return p.suffix in {'.png', '.json'}
-    # FG shader headers and the two host-generation includes are text sources.
+    # FG and NR Swin shader headers and the two host-generation includes are text sources.
     # Keep this bounded; other research .inc payloads still require review.
     if p.suffix == '.metalh' and p.parent.as_posix() in {
-            'src/fg_conv', 'src/fg_conv_simd_l20', 'src/fg_math_ex2'}:
+            'src/fg_conv', 'src/fg_conv_simd_l20', 'src/fg_math_ex2', 'src/nr_swin'}:
         return True
     if path in {'src/fg_runtime/tail_resource_cache.inc',
                 'src/fg_connected_l20_l87/guarded_block.inc'}:

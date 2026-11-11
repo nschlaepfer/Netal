@@ -1,0 +1,149 @@
+#pragma once
+#include <metal_stdlib>
+using namespace metal;
+
+#ifndef NR_QMMA_FSCALE
+#define NR_QMMA_FSCALE 1
+#endif
+
+struct NrQmmaAccumulator {
+  half prior;
+  half a[32];
+  half b[32];
+};
+
+inline NrQmmaAccumulator nr_qmma_begin(half prior) {
+  NrQmmaAccumulator q;
+  q.prior = prior;
+  for (uint k = 0u; k < 32u; ++k) {
+    q.a[k] = half(0);
+    q.b[k] = half(0);
+  }
+  return q;
+}
+
+inline void nr_qmma_add(thread NrQmmaAccumulator& q, uint k, half a, half b) {
+  q.a[k] = a;
+  q.b[k] = b;
+}
+
+inline ulong nr_qmma_rne_shift64(ulong value, uint shift) {
+  if (shift == 0u) return value;
+  if (shift >= 64u) return 0ul;
+  const ulong q = value >> shift, r = value & ((1ul << shift) - 1ul), tie = 1ul << (shift - 1u);
+  return q + ulong(r > tie || (r == tie && (q & 1ul) != 0ul));
+}
+
+inline uint nr_qmma_bitlen64_minus1(ulong m) {
+  const uint hi = uint(m >> 32u);
+  return hi != 0u ? 63u - clz(hi) : 31u - clz(uint(m));
+}
+
+inline half nr_qmma_fixed_half(long value, int scale) {
+  if (value == 0l) return as_type<half>(ushort(0u));
+  const bool negative = value < 0l;
+  const ulong magnitude = negative ? (0ul - ulong(value)) : ulong(value);
+  const uint leading = nr_qmma_bitlen64_minus1(magnitude);
+  int exponent = int(leading) + scale;
+  ulong significand = 0ul;
+  uint result = 0u;
+  if (exponent >= -14) {
+    const int shift = int(leading) - 10;
+    significand = shift > 0 ? nr_qmma_rne_shift64(magnitude, uint(shift)) : (magnitude << uint(-shift));
+    if (significand >= 2048ul) { significand >>= 1u; ++exponent; }
+    result = (exponent > 15) ? 0x7c00u : ((uint(exponent + 15) << 10u) | (uint(significand) - 1024u));
+  } else {
+    const int shift = -(scale + 24);
+    significand = shift > 0 ? nr_qmma_rne_shift64(magnitude, uint(shift)) : (magnitude << uint(-shift));
+    result = significand >= 1024ul ? 0x0400u : uint(significand);
+  }
+  if (negative) result |= 0x8000u;
+  return as_type<half>(ushort(result));
+}
+
+inline half nr_qmma_step(thread const half* a, thread const half* b, half c) {
+  if ((as_type<ushort>(c) & 0x7c00u) == 0x7c00u) return as_type<half>(ushort(0x7e00u));
+  for (uint k = 0u; k < 32u; ++k) {
+    if ((as_type<ushort>(a[k]) & 0x7c00u) == 0x7c00u || (as_type<ushort>(b[k]) & 0x7c00u) == 0x7c00u)
+      return as_type<half>(ushort(0x7e00u));
+  }
+#if NR_QMMA_FP32_CHAIN
+  float acc = float(c);
+  for (uint j = 0u; j < 32u; ++j) acc = fma(float(a[j]), float(b[j]), acc);
+  return half(acc);
+#elif NR_QMMA_FSCALE
+  float p[32];
+  int maxexp = -300;
+  for (uint j = 0u; j < 32u; ++j) {
+    const float fa = float(a[j]), fb = float(b[j]);
+    p[j] = fa * fb;
+    const int ex = int((as_type<uint>(fa) >> 23u) & 255u) + int((as_type<uint>(fb) >> 23u) & 255u) - 254;
+    if (p[j] != 0.0f) maxexp = max(maxexp, ex);
+  }
+  const float cf = float(c);
+  if (cf != 0.0f) maxexp = max(maxexp, int((as_type<uint>(cf) >> 23u) & 255u) - 127);
+  if (maxexp == -300) return as_type<half>(ushort(0u));
+  const int scale = maxexp - 25;
+  const float fs = as_type<float>(uint(127 + 25 - maxexp) << 23u);
+  uint pos = 0u, neg = 0u;
+  for (uint j = 0u; j < 32u; ++j) {
+    const float t = trunc(p[j] * fs);
+    const uint m = uint(fabs(t));
+    if (t < 0.0f) neg += m; else pos += m;
+  }
+  {
+    const float t = trunc(cf * fs);
+    const uint m = uint(fabs(t));
+    if (t < 0.0f) neg += m; else pos += m;
+  }
+  return nr_qmma_fixed_half(long(pos) - long(neg), scale);
+#else
+  int psig[32], pq[32], pexp[32];
+  bool pneg[32];
+  int maxexp = -100000;
+  for (uint j = 0u; j < 32u; ++j) {
+    const ushort ab = as_type<ushort>(a[j]), bb = as_type<ushort>(b[j]);
+    const int ea = int((ab >> 10u) & 31u), eb = int((bb >> 10u) & 31u);
+    const int sa = (ea == 0) ? int(ab & 1023u) : 1024 + int(ab & 1023u);
+    const int sb = (eb == 0) ? int(bb & 1023u) : 1024 + int(bb & 1023u);
+    const int qa = (ea == 0) ? -24 : ea - 25, qb = (eb == 0) ? -24 : eb - 25;
+    psig[j] = sa * sb;
+    pq[j] = qa + qb;
+    pneg[j] = ((ab ^ bb) & 0x8000u) != 0u;
+    const int la = sa > 0 ? 32 - int(clz(uint(sa))) : 0;
+    const int lb = sb > 0 ? 32 - int(clz(uint(sb))) : 0;
+    pexp[j] = (sa > 0 && sb > 0) ? (qa + la - 1) + (qb + lb - 1) : -100000;
+    if (psig[j] != 0) maxexp = max(maxexp, pexp[j]);
+  }
+  const ushort cb = as_type<ushort>(c);
+  const int ce = int((cb >> 10u) & 31u), cfr = int(cb & 1023u);
+  int csig = 0, cq = 0;
+  if (ce != 0) { csig = 1024 + cfr; cq = ce - 25; }
+  else if (cfr != 0) { csig = cfr; cq = -24; }
+  if (csig != 0) {
+    const int lc = 32 - int(clz(uint(csig)));
+    maxexp = max(maxexp, cq + lc - 1);
+  }
+  if (maxexp == -100000) return as_type<half>(ushort(0u));
+  const int scale = maxexp - 25;
+  long total = 0l;
+  for (uint j = 0u; j < 32u; ++j) {
+    if (psig[j] == 0) continue;
+    const int sh = pq[j] - scale;
+    long mag = long(psig[j]);
+    mag = (sh >= 0) ? (mag << uint(sh)) : (sh <= -63 ? 0l : (mag >> uint(-sh)));
+    total += pneg[j] ? -mag : mag;
+  }
+  if (csig != 0) {
+    const int sh = cq - scale;
+    long mag = long(csig);
+    mag = (sh >= 0) ? (mag << uint(sh)) : (sh <= -63 ? 0l : (mag >> uint(-sh)));
+    total += (cb & 0x8000u) != 0u ? -mag : mag;
+  }
+  return nr_qmma_fixed_half(total, scale);
+#endif
+}
+
+inline half nr_qmma_finish(thread const NrQmmaAccumulator& q) {
+  return nr_qmma_step(q.a, q.b, q.prior);
+}
