@@ -2,9 +2,11 @@
 # Launch an eligible native game. The read-only --check path runs before any quit or staging.
 # --observe never arms a model; --no-sr / --no-fg preserve each user's feature choice.
 set -euo pipefail
+export PYTHONDONTWRITEBYTECODE=1
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repository="$(cd "$script_dir/.." && pwd)"
 app=""; observe=0; stage=1; sr=1; fg=1; check_only=0; want_output=""; steam_id=""
+nr_exp=0; nr_bridge_dir=""; nr_model=""; nr_scale=""; nr_async=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --observe) observe=1; shift ;;
@@ -12,6 +14,16 @@ while [[ $# -gt 0 ]]; do
     --no-fg) fg=0; shift ;;
     --no-stage) stage=0; shift ;;
     --check) check_only=1; shift ;;
+    --nr-experimental) nr_exp=1; shift ;;
+    --nr-inline) nr_async=0; shift ;;
+    --nr-bridge-dir|--nr-model|--nr-scale)
+      [[ $# -ge 2 && -n "$2" ]] || { print -u2 "Missing value for $1"; exit 64; }
+      case "$1" in
+        --nr-bridge-dir) nr_bridge_dir="$2" ;;
+        --nr-model) nr_model="$2" ;;
+        --nr-scale) nr_scale="$2" ;;
+      esac
+      shift 2 ;;
     --output|--steam-app-id)
       [[ $# -ge 2 && -n "$2" ]] || { print -u2 "Missing value for $1"; exit 64; }
       if [[ "$1" == --output ]]; then want_output="$2"; else steam_id="$2"; fi
@@ -23,25 +35,40 @@ done
 [[ -n "$app" ]] || { print -u2 "Usage: $0 Game.app [--observe] [--no-sr] [--no-fg] [--check]"; exit 64; }
 [[ -z "$want_output" || "$want_output" == <->x<-> ]] || { print -u2 'Output must be WIDTHxHEIGHT.'; exit 64; }
 [[ -z "$steam_id" || "$steam_id" == <-> ]] || { print -u2 'Steam app ID must contain digits only.'; exit 64; }
-(( observe || sr || fg )) || { print -u2 'Choose Super Resolution, Frame Generation, or an observation run.'; exit 64; }
+(( observe || sr || fg || nr_exp )) || { print -u2 'Choose Super Resolution, Frame Generation, experimental NR, or an observation run.'; exit 64; }
+if (( nr_exp )); then
+  [[ -n "$nr_bridge_dir" && -n "$nr_model" ]] || { print -u2 -- '--nr-experimental requires --nr-bridge-dir DIR and --nr-model PATH.'; exit 64; }
+fi
 
 # --observe here checks injection eligibility separately from static MetalFX evidence.
 inspection="$(zsh "$script_dir/netal-native-preflight.sh" "$app" --json --observe)" || {
   print -u2 -- "$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["summary"]+": "+d["detail"])' <<< "$inspection" 2>/dev/null || print 'Compatibility inspection failed. Check the runtime folder and Python 3 installation.')"
   exit 1
 }
-inspection_values=("${(@f)$(python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["bundleID"]); print(d["executable"]); print(int(d["sandboxed"])); print(int(d["canLaunchModels"]))' <<< "$inspection")}")
+inspection_values=("${(@f)$(python3 -c 'import json,sys; d=json.load(sys.stdin); exes=d.get("targetExecutables") or [d["executable"]]; print(d["bundleID"]); print(d["executable"]); print(int(d["sandboxed"])); print(int(d["canLaunchModels"])); print(",".join(exes))' <<< "$inspection")}")
 bundle_id="$inspection_values[1]"
 executable="$inspection_values[2]"
 sandboxed="$inspection_values[3]"
-if (( ! observe && ! inspection_values[4] )); then
+target_executables_csv="$inspection_values[5]"
+if (( ! observe && (sr || fg) && ! inspection_values[4] )); then
   print -u2 'No native MetalFX integration has been verified for this game. Use Window Capture, or run an observation check first.'
   exit 1
 fi
 
 dylib="$repository/build/netal-native/libNetalNative.dylib"
-[[ -f "$dylib" ]] || { print -u2 'The native bridge is missing. Choose a complete runtime folder in Netal Settings.'; exit 1; }
-[[ "$(/usr/bin/lipo -archs "$dylib" 2>/dev/null)" == *arm64* ]] || { print -u2 'The native bridge has no Apple silicon version. Rebuild or choose a complete runtime folder.'; exit 1; }
+if (( observe || sr || fg )); then
+  [[ -f "$dylib" ]] || { print -u2 'The native bridge is missing. Choose a complete runtime folder in Netal Settings.'; exit 1; }
+  [[ "$(/usr/bin/lipo -archs "$dylib" 2>/dev/null)" == *arm64* ]] || { print -u2 'The native bridge has no Apple silicon version. Rebuild or choose a complete runtime folder.'; exit 1; }
+fi
+if (( nr_exp )); then
+  nr_dylib="$nr_bridge_dir/libNetalNRFastBridge.dylib"
+  [[ -f "$nr_dylib" && -f "$nr_bridge_dir/nr_fast_kernels.metallib" && -f "$nr_bridge_dir/netal_nr_optical_flow.metallib" ]] || {
+    print -u2 'Experimental NR bridge artifacts are incomplete. Build with scripts/build-netal-nr-fast-bridge.py first.'
+    exit 1
+  }
+  [[ "$(/usr/bin/lipo -archs "$nr_dylib" 2>/dev/null)" == *arm64* ]] || { print -u2 'The experimental NR bridge has no Apple silicon slice.'; exit 1; }
+  [[ -f "$nr_model" || -d "$nr_model" ]] || { print -u2 'Experimental NR model path was not found.'; exit 1; }
+fi
 container="$HOME/Library/Containers/$bundle_id/Data"
 if (( sandboxed )); then
   [[ -d "$container" ]] || { print -u2 'Open this App Store game normally once, then quit it and try Netal again.'; exit 1; }
@@ -93,7 +120,11 @@ if (( check_only )); then
 fi
 # Refuse before touching session logs or staging. Match the process command as a literal path,
 # rather than using a regex made from a path that can contain brackets or parentheses.
-if /bin/ps -ww -axo comm= | python3 -c 'import sys; commands=sys.stdin.read().splitlines(); sys.exit(0 if sys.argv[1] in commands else 1)' "$app/Contents/MacOS/$executable"; then
+target_paths=()
+for exe in "${(@s:,:)target_executables_csv}"; do
+  [[ -n "$exe" ]] && target_paths+=("$app/Contents/MacOS/$exe")
+done
+if /bin/ps -ww -axo comm= | python3 -c 'import sys; from pathlib import Path; commands={c for raw in sys.stdin.read().splitlines() if raw for c in (raw, str(Path(raw).resolve())) if c}; targets={t for arg in sys.argv[1:] for t in (arg, str(Path(arg).resolve()))}; sys.exit(0 if commands & targets else 1)' "${target_paths[@]}"; then
   print -u2 'The game is still running. Save and quit it, then start it through Netal.'
   exit 1
 fi
@@ -171,14 +202,35 @@ temporary.write_text('\n'.join(lines + ['fg=' + sys.argv[2]]) + '\n')
 os.replace(temporary, path)
 CONTROL
 sr_arm=$(( sr && ! observe )); fg_arm=$(( fg && ! observe ))
+dyld_insert="$dylib"
+if (( nr_exp && ! observe )); then
+  if (( observe || sr || fg )); then
+    dyld_insert="$dylib:$nr_bridge_dir/libNetalNRFastBridge.dylib"
+  else
+    dyld_insert="$nr_bridge_dir/libNetalNRFastBridge.dylib"
+  fi
+fi
 env_args=(
-  --env "DYLD_INSERT_LIBRARIES=$dylib"
+  --env "DYLD_INSERT_LIBRARIES=$dyld_insert"
   --env "NEURALSTUDIO_RE9_METALFX_NOOP=1"
   --env "NEURALSTUDIO_RE9_METALFX_LOG=$log"
-  --env "NEURALSTUDIO_TARGET_EXE=$executable"
+  --env "NEURALSTUDIO_TARGET_EXE=$target_executables_csv"
   --env "NEURALSTUDIO_RE9_SR_ARM=$sr_arm"
   --env "NEURALSTUDIO_RE9_FG_ARM=$fg_arm"
 )
+if (( nr_exp && ! observe )); then
+  env_args+=(
+    --env "NETAL_NR_ADAPTER_MODE=continuous"
+    --env "NETAL_NR_MODEL=$nr_model"
+    --env "NETAL_NR_METALLIB=$nr_bridge_dir/nr_fast_kernels.metallib"
+    --env "NETAL_NR_FLOW_METALLIB=$nr_bridge_dir/netal_nr_optical_flow.metallib"
+    --env "NETAL_NR_LOG=$netal_dir/netal-nr-live.log"
+    --env "NETAL_NR_HOOK_SPATIAL=1"
+    --env "NETAL_NR_HOOK_DRAWABLE=1"
+    --env "NETAL_NR_ASYNC=$nr_async"
+  )
+  [[ -z "$nr_scale" ]] || env_args+=(--env "NETAL_NR_SCALE=$nr_scale")
+fi
 if (( ! observe && sr )); then
   env_args+=(
     --env "NEURALSTUDIO_RE9_SR_BUNDLE=$sr_bundle"

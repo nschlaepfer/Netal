@@ -18,9 +18,17 @@ OptiScaler was recorded as an architectural reference, not copied source. Verify
 
 NGX and Streamline headers, if supplied locally for a build, retain their upstream terms.
 
-## Optional MLX NR backend
+## Adapted MLX-DLSS neural rendering formulation (`src/nr_fast/`)
 
-MLX-DLSS is a separate upstream project and is not vendored in this source candidate. Any future integration must pin its revision, preserve its license and dependency notices, document installation, and keep experimental NR off by default. Neither installing MLX nor possessing a model file proves that continuous in-game NR is supported.
+`src/nr_fast/` is a standalone native Metal 3.1 and C++20 implementation; it does not vendor MLX, MLX Swift, or any model files. Portions of its weight-package contract and operator math are adapted from WaveCut's `iamwavecut/MLX-DLSS` (Apache-2.0), pinned at commit `7870371e8bf6c03967213f1a5d40db6c5a3bee38`. Upstream license and `NOTICE` texts are preserved in `LICENSES/MLX-DLSS-Apache-2.0.txt`, and modified/adapted source files carry explicit `SPDX-License-Identifier: MIT AND Apache-2.0` attribution headers.
+
+Specifically adapted contracts in `src/nr_fast/` (`nr_fast_runtime.h`, `nr_fast_runtime.mm`, `nr_fast_kernels.metal`) are:
+
+- `mlxdlss.neural-rendering-transformer.v1` `.dlssmodel` manifest validation and `mlxdlss-native-e4m3-v1` `F8_E4M3`/`F16`/`F32` safetensors layout, plus dynamic U-Net topology inference (`Small31` `[2,2,2,2,2]` 31-block and `HT71` `[4,4,6,8,8]` 71-block);
+- 12-bit window attention-bias fragment swizzle (`headCount == 1` and `headCount == 16`), bit-affine FP16 softmax (`clamp(fma(score, 0.044921875, 1.30078125))`), vendor cosine skip normalization, and E4M3 quantization/decoding math;
+- Deterministic PCG RXS-M-XS (`0x108ef2d9`) 3-channel Gaussian noise preprocessor contract, 5-tap Catmull-Rom temporal history reprojection, and separable Gaussian detail-split composition.
+
+Apache-2.0 covers the open-source MLX-DLSS code and Netal's native Metal adaptation. It does **not** relicense or clear third-party model weights, proprietary vendor runtimes, or game assets. Experimental NR remains strictly opt-in (`off` by default) in all bridges and launchers; neither building `src/nr_fast/` nor supplying a local model file establishes universal game compatibility or RTX bit-exactness on hardware-accelerated paths.
 
 ## Source-built SR model capture helpers
 

@@ -15,6 +15,7 @@ working Resident Evil SR/FG integration.
 - [SR arithmetic modes](SR_ARITHMETIC_MODES.md): validated numerical scope and honest mode controls.
 - [SR body source build](SR_SOURCE_BUILD.md): generated layouts, model repacking, pipeline recipes, and current regression limits.
 - [FG engine source build](FG_SOURCE_BUILD.md): compile shaders and universal host libraries without models or inference.
+- [Native Metal NR runtime and opt-in adapter](NR_FAST_AND_ADAPTER.md): standalone `simdgroup_matrix` DLSS 5 NR engine, optical flow, and opt-in bridge.
 - [Local SR model setup](MODEL_SETUP.md): build capture helpers and import the supported model locally.
 - [Release gate](RELEASE.md): SR + FG scope, experimental NR, and remaining blockers.
 - [Architecture](architecture.md): app, game bridge, and runtime boundaries.

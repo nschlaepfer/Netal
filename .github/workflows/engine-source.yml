@@ -31,6 +31,14 @@ jobs:
           python3 scripts/build-netal-sr-reference-kernels.py --output "$RUNNER_TEMP/netal-sr-reference"
           python3 scripts/build-netal-sr-boundary-kernels.py --output "$RUNNER_TEMP/netal-sr-boundaries"
           python3 scripts/build-netal-sr-texture-kernels.py --output "$RUNNER_TEMP/netal-sr-textures"
+      - name: Compile standalone NR fast runtime, opt-in bridge and Swin reference shaders
+        run: |
+          python3 scripts/build-netal-nr-fast.py --output "$RUNNER_TEMP/netal-nr-fast"
+          python3 scripts/build-netal-nr-fast-bridge.py --output "$RUNNER_TEMP/netal-nr-fast-bridge"
+          mkdir -p "$RUNNER_TEMP/netal-nr-swin"
+          xcrun metal -std=metal3.1 -I src/nr_swin -c src/nr_swin/swin32_chain.metal -o "$RUNNER_TEMP/netal-nr-swin/swin32_chain.air"
+          xcrun metal -std=metal3.1 -I src/nr_swin -c src/nr_swin/swin32_downsample.metal -o "$RUNNER_TEMP/netal-nr-swin/swin32_downsample.air"
+          xcrun metal -std=metal3.1 -I src/nr_swin -include swin_wide.metal -c src/nr_swin/wide_boundaries.metal -o "$RUNNER_TEMP/netal-nr-swin/wide_boundaries.air"
       - name: Link native and CrossOver bridges against source-built FG
         env:
           NEURALSTUDIO_FG_BUNDLE: ${{ runner.temp }}/netal-fg-engine

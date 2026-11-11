@@ -23,6 +23,9 @@ jobs:
         run: |
           swift --version
           xcrun --show-sdk-version
+          if ! xcrun metal --version; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
       - name: Test app behavior
         run: zsh scripts/test-macos-netal-menubar.sh
       - name: Test CrossOver routing without launching games
@@ -50,6 +53,13 @@ jobs:
         run: python3 scripts/test-fg-offline-sequence.py
       - name: Test SR source assembly boundaries
         run: python3 scripts/test-netal-sr-source-assembly.py
+      - name: Test opt-in NR state, optical flow, runtime and bridge contracts
+        run: |
+          python3 scripts/test-netal-native-launch.py
+          zsh scripts/test-netal-nr-continuous-state.sh
+          python3 scripts/test-netal-nr-optical-flow.py
+          python3 scripts/test-netal-nr-fast.py
+          python3 scripts/test-netal-nr-fast-bridge.py
       - name: Build app
         run: zsh scripts/build-macos-netal-menubar.sh
       - name: Validate export tooling

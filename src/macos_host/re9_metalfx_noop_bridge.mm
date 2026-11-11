@@ -194,26 +194,37 @@ void Log(const char* format, ...) {
   funlockfile(g_log);
 }
 
-// The bridge is injected into one chosen process, but Wine loads it into helpers too, so it
-// double-checks that this really is the game. NEURALSTUDIO_TARGET_EXE carries whichever executable
-// the launch targeted (--exe); without it this falls back to RE9 so older callers are unchanged.
+// The bridge is injected into one chosen process, but Wine and multi-binary native bundles can
+// pass DYLD_INSERT_LIBRARIES to child processes too, so double-check that this really is a
+// targeted game or render-host executable. NEURALSTUDIO_TARGET_EXE carries one or more
+// comma-separated executable basenames; without it this falls back to RE9 for older callers.
 bool IsTargetProcess() {
-  NSString* target = @"re9.exe";
+  NSCharacterSet* ws = [NSCharacterSet whitespaceAndNewlineCharacterSet];
+  NSMutableArray<NSString*>* targets = [NSMutableArray array];
   if (const char* env = std::getenv("NEURALSTUDIO_TARGET_EXE")) {
-    NSString* value = [@(env) stringByTrimmingCharactersInSet:
-                           [NSCharacterSet whitespaceAndNewlineCharacterSet]];
-    if (value.length > 0) target = value;
+    for (NSString* raw in [@(env) componentsSeparatedByString:@","]) {
+      NSString* token = [raw stringByTrimmingCharactersInSet:ws].lowercaseString;
+      if (token.length > 0) [targets addObject:token];
+    }
   }
-  target = target.lowercaseString;
-  NSString* stem = target.stringByDeletingPathExtension;
+  if (targets.count == 0) [targets addObject:@"re9.exe"];
   NSString* process = NSProcessInfo.processInfo.processName.lowercaseString;
-  if ([process isEqualToString:target] || [process isEqualToString:stem]) return true;
-  for (NSString* argument in NSProcessInfo.processInfo.arguments) {
-    NSString* value = argument.lowercaseString;
-    if ([value isEqualToString:target] ||
-        [value hasSuffix:[@"\\" stringByAppendingString:target]] ||
-        [value hasSuffix:[@"/" stringByAppendingString:target]]) {
+  NSArray<NSString*>* arguments = NSProcessInfo.processInfo.arguments;
+  for (NSString* target in targets) {
+    NSString* stem = target.stringByDeletingPathExtension;
+    if ([process isEqualToString:target] || (stem.length > 0 && [process isEqualToString:stem])) {
       return true;
+    }
+    NSString* win_suffix = [@"\\" stringByAppendingString:target];
+    NSString* posix_suffix = [@"/" stringByAppendingString:target];
+    for (NSString* argument in arguments) {
+      NSString* value = argument.lowercaseString;
+      if ([value hasPrefix:@"-"]) continue;
+      if ([value isEqualToString:target] ||
+          [value hasSuffix:win_suffix] ||
+          [value hasSuffix:posix_suffix]) {
+        return true;
+      }
     }
   }
   return false;

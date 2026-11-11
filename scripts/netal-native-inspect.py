@@ -12,6 +12,8 @@ import struct
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+
 MAX_BINARIES = 96
 MAX_HEADER = 1 << 20
 MAX_STRING_SCAN = 4 << 20
@@ -48,6 +50,26 @@ def macho_slices(path: Path) -> list[tuple[int, int]]:
             if extent >= 28 and offset <= length and extent <= length - offset:
                 result.append((offset, extent))
         return result
+
+
+def macho_executable(path: Path) -> bool:
+    try:
+        slices = macho_slices(path)
+        with path.open("rb") as handle:
+            for offset, size in slices:
+                if size < 16:
+                    continue
+                handle.seek(offset)
+                header = handle.read(16)
+                if header[:4] not in MACH_MAGICS or len(header) < 16:
+                    continue
+                endian = "<" if header[:4] in (b"\xcf\xfa\xed\xfe", b"\xce\xfa\xed\xfe") else ">"
+                filetype = struct.unpack_from(endian + "I", header, 12)[0]
+                if filetype == 2:
+                    return True
+    except (OSError, struct.error):
+        pass
+    return False
 
 
 def metalfx_evidence(path: Path) -> bool:
@@ -112,7 +134,7 @@ def bundled_binaries(app: Path, executable: Path) -> list[Path]:
 
 
 def inspect(app: Path) -> dict:
-    result = dict(app=str(app), bundleID="", executable="", architectures=[], sandboxed=False,
+    result = dict(app=str(app), bundleID="", executable="", targetExecutables=[], architectures=[], sandboxed=False,
                   hardened=False, allowDyld=False, disableLibraryValidation=False,
                   hasMetalFXEvidence=False, evidencePaths=[], canObserve=False, canLaunchModels=False,
                   summary="Cannot inspect this game", detail="Choose a downloaded macOS .app bundle.")
@@ -133,7 +155,7 @@ def inspect(app: Path) -> dict:
             raise ValueError("The game executable is missing or not executable. Finish downloading it first.")
         if not binary.resolve().is_relative_to(app):
             raise ValueError("The game executable points outside its app bundle.")
-        result.update(app=str(app), bundleID=bundle_id, executable=executable)
+        result.update(app=str(app), bundleID=bundle_id, executable=executable, targetExecutables=[executable])
         arch = run(["/usr/bin/lipo", "-archs", str(binary)])
         if arch.returncode:
             raise ValueError("Cannot inspect the executable architecture.")
@@ -157,8 +179,19 @@ def inspect(app: Path) -> dict:
         result["allowDyld"] = entitlements.get("com.apple.security.cs.allow-dyld-environment-variables") is True
         result["disableLibraryValidation"] = entitlements.get("com.apple.security.cs.disable-library-validation") is True
         binaries = bundled_binaries(app, binary)
-        result["evidencePaths"] = [str(p.relative_to(app)) for p in binaries if metalfx_evidence(p)]
+        evidence_binaries = [p for p in binaries if metalfx_evidence(p)]
+        result["evidencePaths"] = [str(p.relative_to(app)) for p in evidence_binaries]
         result["hasMetalFXEvidence"] = bool(result["evidencePaths"])
+        macos_dir = app / "Contents/MacOS"
+        targets = [executable]
+        for candidate in evidence_binaries:
+            if (candidate != binary and candidate.parent == macos_dir
+                    and not candidate.is_symlink() and os.access(candidate, os.X_OK)
+                    and candidate.suffix.lower() not in {".dylib", ".so"}
+                    and "," not in candidate.name and not any(ord(c) < 32 for c in candidate.name)
+                    and macho_executable(candidate) and candidate.name not in targets):
+                targets.append(candidate.name)
+        result["targetExecutables"] = targets
         if "arm64" not in result["architectures"]:
             result.update(summary="Intel game: use Window Capture", detail="The native Netal bridge requires an Apple silicon game. Window Capture can work with Intel games running through Rosetta.")
         elif result["hardened"] and not result["allowDyld"]:

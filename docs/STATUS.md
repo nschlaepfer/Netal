@@ -36,7 +36,10 @@ establish continuous moving-image NR, playable performance, general game-depth
 or motion integration, or universal RTX parity. Continuous NR remains disabled
 in normal app launchers. This section summarizes retained research records;
 private game captures are not distributed, and it is not a new test of the
-downloadable menu-bar app.
+downloadable menu-bar app. For the standalone `simdgroup_matrix` Metal NR
+runtime (`src/nr_fast/`), GPU optical-flow synthesizer, and strictly opt-in
+in-process adapter (`libNetalNRFastBridge.dylib`), see
+[Native Metal NR and opt-in adapter](NR_FAST_AND_ADAPTER.md).
 
 ## Open source-origin and setup work
 
