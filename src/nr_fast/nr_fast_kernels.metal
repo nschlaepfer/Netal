@@ -3020,8 +3020,77 @@ kernel void nr_fast_detail_blur_v_compose(
 }
 
 // ============================================================================
-// RenderTarget Fullscreen Blit Shaders (for CAMetalDrawable / sRGB outputs
-// that carry MTLTextureUsageRenderTarget without MTLTextureUsageShaderWrite)
+// Network-Resolution Pre-Baked Delta Kernels & Single-Pass Display Compositors
+// (Eliminates full-output-resolution 25-tap blur & intermediate buffers on 60Hz
+// display queues: worker bakes `scale * (colour*lowPass + detail*highPass)` once
+// at `(net_width, net_height)` into an RGBA16Float texture, and display frames
+// sample it via hardware bilinear filtering in a single ~0.25 ms pass.)
+// ============================================================================
+
+kernel void nr_fast_bake_delta_blur_h(
+    const device float4* delta_net [[buffer(0)]],
+    device float4* blur_h_net [[buffer(1)]],
+    constant DetailComposeParams& p [[buffer(2)]],
+    constant float* weights [[buffer(3)]],
+    uint2 gid [[thread_position_in_grid]]) {
+  if (gid.x >= p.net_width || gid.y >= p.net_height) return;
+  int rad = int(p.radius);
+  float3 acc = float3(0.0f);
+  for (int dx = -rad; dx <= rad; ++dx) {
+    int cx = clamp(int(gid.x) + dx, 0, int(p.net_width) - 1);
+    acc += delta_net[gid.y * p.net_width + uint(cx)].rgb * weights[dx + rad];
+  }
+  blur_h_net[gid.y * p.net_width + gid.x] = float4(acc, 0.0f);
+}
+
+kernel void nr_fast_bake_delta_tex(
+    const device float4* delta_net [[buffer(0)]],
+    const device float4* blur_h_net [[buffer(1)]],
+    texture2d<float, access::write> baked_tex [[texture(0)]],
+    constant DetailComposeParams& p [[buffer(2)]],
+    constant float* weights [[buffer(3)]],
+    uint2 gid [[thread_position_in_grid]]) {
+  if (gid.x >= p.net_width || gid.y >= p.net_height) return;
+  float3 change = delta_net[gid.y * p.net_width + gid.x].rgb;
+  float scale = (p.scaled_network == 0u) ? 1.0f : p.intensity;
+  float3 final_delta;
+  if (p.radius == 0u) {
+    final_delta = scale * p.detail_strength * change;
+  } else {
+    int rad = int(p.radius);
+    float3 low_pass = float3(0.0f);
+    for (int dy = -rad; dy <= rad; ++dy) {
+      int cy = clamp(int(gid.y) + dy, 0, int(p.net_height) - 1);
+      low_pass += blur_h_net[uint(cy) * p.net_width + gid.x].rgb * weights[dy + rad];
+    }
+    float3 high_pass = change - low_pass;
+    final_delta = scale * (p.colour_strength * low_pass + p.detail_strength * high_pass);
+  }
+  baked_tex.write(float4(final_delta, 0.0f), gid);
+}
+
+kernel void nr_fast_compose_baked_tex(
+    texture2d<float, access::read> color_tex [[texture(0)]],
+    texture2d<float, access::sample> baked_delta_tex [[texture(1)]],
+    texture2d<float, access::write> output_tex [[texture(2)]],
+    constant DetailComposeParams& p [[buffer(0)]],
+    uint2 gid [[thread_position_in_grid]]) {
+  if (gid.x >= p.out_width || gid.y >= p.out_height) return;
+  constexpr sampler lin_samp(coord::normalized, address::clamp_to_edge, filter::linear);
+  float3 src = nr_fast_read_output_base_srgb(
+      color_tex, gid.x, gid.y, p.out_width, p.out_height, p.srgb_transfer != 0u);
+  float2 uv = (float2(gid) + 0.5f) / float2(float(p.out_width), float(p.out_height));
+  float3 delta = baked_delta_tex.sample(lin_samp, uv).rgb;
+  float3 composed = clamp(src + delta, 0.0f, 1.0f);
+  if (p.srgb_transfer != 0u) {
+    composed = nr_fast_srgb_to_linear(composed);
+  }
+  output_tex.write(float4(composed, 1.0f), gid);
+}
+
+// ============================================================================
+// RenderTarget Fullscreen Blit & Single-Pass Baked-Delta Shaders
+// (for CAMetalDrawable / sRGB outputs without MTLTextureUsageShaderWrite)
 // ============================================================================
 
 struct NRBridgeBlitVSOut {
@@ -3040,4 +3109,33 @@ fragment float4 nr_bridge_blit_fs(
     texture2d<float, access::read> src_tex [[texture(0)]]) {
   uint2 coord = uint2(in.position.xy);
   return float4(src_tex.read(coord).rgb, 1.0f);
+}
+
+fragment float4 nr_bridge_resize_fs(
+    NRBridgeBlitVSOut in [[stage_in]],
+    texture2d<float, access::sample> src_tex [[texture(0)]],
+    constant float2& inv_dst_size [[buffer(0)]]) {
+  constexpr sampler lin_samp(coord::normalized, address::clamp_to_edge, filter::linear);
+  float2 uv = in.position.xy * inv_dst_size;
+  return float4(src_tex.sample(lin_samp, uv).rgb, 1.0f);
+}
+
+fragment float4 nr_bridge_compose_baked_fs(
+    NRBridgeBlitVSOut in [[stage_in]],
+    texture2d<float, access::read> src_tex [[texture(0)]],
+    texture2d<float, access::sample> baked_delta_tex [[texture(1)]],
+    constant uint4& dims [[buffer(0)]]) {
+  constexpr sampler lin_samp(coord::normalized, address::clamp_to_edge, filter::linear);
+  uint2 coord = uint2(in.position.xy);
+  float3 src = src_tex.read(coord).rgb;
+  if (dims.z != 0u) {
+    src = nr_fast_linear_to_srgb(src);
+  }
+  float2 uv = in.position.xy / float2(float(dims.x), float(dims.y));
+  float3 delta = baked_delta_tex.sample(lin_samp, uv).rgb;
+  float3 composed = clamp(src + delta, 0.0f, 1.0f);
+  if (dims.z != 0u) {
+    composed = nr_fast_srgb_to_linear(composed);
+  }
+  return float4(composed, 1.0f);
 }

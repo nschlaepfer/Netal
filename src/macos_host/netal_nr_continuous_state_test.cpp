@@ -215,6 +215,42 @@ int main() {
     assert(snap.telemetry.skipped_busy == 2);
   }
 
+  // 5b. Async worker cadence throttle (NETAL_NR_WORKER_INTERVAL_MS).
+  {
+    auto bad_iv = parse_map(
+        {
+            {"NETAL_NR_ADAPTER_MODE", "continuous"},
+            {"NETAL_NR_WORKER_INTERVAL_MS", "1500"},
+        },
+        false);
+    assert(!bad_iv.valid);
+
+    auto cfg = parse_map({
+        {"NETAL_NR_ADAPTER_MODE", "continuous"},
+        {"NETAL_NR_ASYNC", "1"},
+        {"NETAL_NR_WORKER_INTERVAL_MS", "200"},
+    });
+    assert(cfg.valid);
+    assert(cfg.worker_interval_ms == 200);
+    ContinuousAdapterState st(cfg);
+
+    auto f1 = st.begin_frame(1, 1, 1920, 1080, false);
+    assert(f1.action == ContinuousAdapterState::Action::AdmitAsync);
+    st.complete_slot(f1.slot, f1.generation, 1, true);
+
+    // Immediate next frame within 200 ms window reuses cached delta without admitting worker.
+    auto f2 = st.begin_frame(2, 1, 1920, 1080, false);
+    assert(f2.action == ContinuousAdapterState::Action::ReuseLatestDelta);
+    assert(!f2.admitted);
+    assert(f2.has_reusable_delta);
+
+    // Explicit game_reset bypasses throttle immediately.
+    auto f3 = st.begin_frame(3, 1, 1920, 1080, false, true);
+    assert(f3.action == ContinuousAdapterState::Action::AdmitAsync);
+    assert(f3.admitted);
+    st.complete_slot(f3.slot, f3.generation, 3, true);
+  }
+
   // 6. Thread-safety stress test on concurrent admission/completion.
   {
     auto cfg = parse_map({{"NETAL_NR_ADAPTER_MODE", "once"}});

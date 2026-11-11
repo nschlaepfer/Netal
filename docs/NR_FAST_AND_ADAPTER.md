@@ -118,16 +118,25 @@ Auxiliary adapter passes at `1920x1080`:
 
 In a local two-binary native Metal 4 game host session on Apple M4 Max (`macOS 27.2`,
 `NEURALSTUDIO_TARGET_EXE` child-process gate active, `HT71` `F8_E4M3` checkpoint,
-`NETAL_NR_SCALE=0.375` -> `1280x832` internal network composited onto a `3456x2168`
-Retina `CAMetalDrawable` via `MTL4CommandQueue signalDrawable:`):
+composited onto a `3456x2168` Retina `CAMetalDrawable` via `MTL4CommandQueue signalDrawable:`
+using network-resolution staging, worker-side pre-baked `RGBA16Float` detail/colour
+deltas, and single-pass hardware-bilinear display composition):
 - Parent launcher process remained unhooked; child Metal 4 render host hooked
-  `AGXG16XFamilyCommandQueue_mtlnext` cleanly and completed 180 consecutive
-  published NR display frames with zero fallbacks after two initial async warm-up
-  frames (`exit_code = 0` on `SIGTERM`).
-- Background `HT71` + optical-flow worker pass (`1280x832`): ~`56.3–60.9 ms` GPU time
-  (86 completed neural updates across 180 display presents).
-- Display-queue delta composition + `RenderTarget` fullscreen writeback (`3456x2168`):
-  ~`4.38–12.44 ms` whole helper command-buffer GPU time.
+  `AGXG16XFamilyCommandQueue_mtlnext` cleanly with zero fallbacks after one initial
+  async warm-up frame (`exit_code = 0` on `SIGTERM`).
+- At `NETAL_NR_SCALE=0.26` (`896x576` internal network, `NETAL_NR_DETAIL=1.65`,
+  `NETAL_NR_WORKER_INTERVAL_MS=45`):
+  - Single-pass display-queue composition onto `3456x2168` `CAMetalDrawable`:
+    ~`0.181–0.231 ms` GPU time (`0` full-resolution intermediate scratch buffers).
+  - Background `HT71` + network-scale optical-flow worker pass (`896x576`):
+    ~`28.98–38.05 ms` GPU time (~11–12 neural updates/s).
+  - Sustained presentation rate across frames 120–780 (`660` consecutive frames):
+    **`59.97 FPS`** (`11.006 s`).
+- At `NETAL_NR_SCALE=0.31` (`1088x704` internal network, `NETAL_NR_DETAIL=1.65`,
+  `NETAL_NR_WORKER_INTERVAL_MS=45`):
+  - Single-pass display-queue composition (`3456x2168`): ~`0.210–0.231 ms` GPU time.
+  - Background `HT71` + optical-flow worker pass (`1088x704`): ~`42.84–46.23 ms` GPU time,
+    sustaining **`60.00 FPS`** steady-state presentation (`240` frames in `4.000 s`).
 - Scope note: this establishes technical execution of the opt-in Metal 4 drawable
   seam on one machine and title, not universal game compatibility, HUD separation,
   or NVIDIA RTX parity.
@@ -144,6 +153,7 @@ Retina `CAMetalDrawable` via `MTL4CommandQueue signalDrawable:`):
 | `NETAL_NR_DETAIL` / `NETAL_NR_COLOUR` | `[0, 8]` / `[0, 4]`, default `1.0` | High-frequency detail vs low-frequency colour gain |
 | `NETAL_NR_INTENSITY` | `[0, 1]`, default `1.0` | Overall neural delta blend factor |
 | `NETAL_NR_ASYNC` | `0` (default) or `1` | `1` runs U-Net on a background queue and composes cached deltas on display frames |
+| `NETAL_NR_WORKER_INTERVAL_MS` | `[0, 1000]`, default `0` | Optional minimum ms between async worker cycles for uncontended 60 Hz headroom |
 | `NETAL_NR_HOOK_SPATIAL` | `0` (default) or `1` | Intercept `MTLFXSpatialScaler` |
 | `NETAL_NR_HOOK_DRAWABLE` | `0` (default) or `1` | Intercept `CAMetalLayer` + Metal 4 `MTL4CommandQueue signalDrawable:` |
 | `NEURALSTUDIO_TARGET_EXE` | Comma-separated basenames (optional) | Restrict hook installation to matching child executables |

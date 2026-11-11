@@ -1439,6 +1439,9 @@ struct Context::Impl {
   id<MTLComputePipelineState> pso_upsample_compose = nil;
   id<MTLComputePipelineState> pso_detail_blur_h = nil;
   id<MTLComputePipelineState> pso_detail_blur_v = nil;
+  id<MTLComputePipelineState> pso_bake_delta_blur_h = nil;
+  id<MTLComputePipelineState> pso_bake_delta_tex = nil;
+  id<MTLComputePipelineState> pso_compose_baked_tex = nil;
 
   TopologySpec topology;
   bool synthetic = false;
@@ -1536,7 +1539,10 @@ struct Context::Impl {
         !make_pso("nr_fast_post_temporal", &pso_post_temporal) ||
         !make_pso("nr_fast_upsample_compose", &pso_upsample_compose) ||
         !make_pso("nr_fast_detail_blur_h", &pso_detail_blur_h) ||
-        !make_pso("nr_fast_detail_blur_v_compose", &pso_detail_blur_v)) {
+        !make_pso("nr_fast_detail_blur_v_compose", &pso_detail_blur_v) ||
+        !make_pso("nr_fast_bake_delta_blur_h", &pso_bake_delta_blur_h) ||
+        !make_pso("nr_fast_bake_delta_tex", &pso_bake_delta_tex) ||
+        !make_pso("nr_fast_compose_baked_tex", &pso_compose_baked_tex)) {
       return false;
     }
 
@@ -2457,8 +2463,10 @@ bool Context::encode(
       if (out_error) *out_error = "color_texture and command buffer are required";
       return false;
     }
-    if (!inputs.output_texture && !inputs.export_delta_buffer) {
-      if (out_error) *out_error = "output_texture or export_delta_buffer is required";
+    if (!inputs.output_texture && !inputs.export_delta_buffer && !inputs.export_baked_delta_texture) {
+      if (out_error) {
+        *out_error = "output_texture, export_delta_buffer, or export_baked_delta_texture is required";
+      }
       return false;
     }
     if (inputs.output_texture && inputs.color_texture == inputs.output_texture) {
@@ -2516,6 +2524,14 @@ bool Context::encode(
       if (out_error) *out_error = "export_delta_buffer is smaller than hist_w * hist_h * sizeof(float4)";
       return false;
     }
+    if (inputs.export_baked_delta_texture &&
+        ([inputs.export_baked_delta_texture width] < hist_w ||
+         [inputs.export_baked_delta_texture height] < hist_h)) {
+      if (out_error) {
+        *out_error = "export_baked_delta_texture is smaller than hist_w x hist_h";
+      }
+      return false;
+    }
 
     if (!impl_->EnsureScratch(net_w, net_h, inputs.output_texture ? out_w : 0u, inputs.output_texture ? out_h : 0u, out_error) ||
         !impl_->EnsureHistoryTextures(hist_w, hist_h, out_error)) {
@@ -2549,7 +2565,8 @@ bool Context::encode(
     const float colour_s = inputs.params.colour_strength;
     const float intensity = inputs.params.intensity;
     const bool direct_write =
-        (inputs.export_delta_buffer == nil && inputs.output_texture != nil &&
+        (inputs.export_delta_buffer == nil && inputs.export_baked_delta_texture == nil &&
+         inputs.output_texture != nil &&
          !scaled_net && out_w == in_w && out_h == in_h && detail_s == 1.0f && colour_s == 1.0f);
 
     id<MTLComputeCommandEncoder> enc =
@@ -2633,6 +2650,49 @@ bool Context::encode(
     [enc setTexture:impl_->history_tex[next_hist_idx] atIndex:0];
     [enc setTexture:(direct_write ? inputs.output_texture : impl_->dummy_tex) atIndex:1];
     dispatch_2d(impl_->pso_post_temporal, hist_w, hist_h);
+
+    // Stage C.2: Optional Worker-Side Pre-Baked RGBA16Float Delta Texture at (hist_w, hist_h).
+    // Reuses `s.base_net_rgb_off` (no longer read after post_temporal) for horizontal blur scratch,
+    // enabling single-pass (<0.4 ms) hardware-bilinear composition on 60–120 Hz display queues.
+    if (inputs.export_baked_delta_texture != nil) {
+      [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+      const bool needs_split_blur = (std::abs(detail_s - colour_s) >= 1e-6f);
+      uint32_t bake_radius = 0;
+      std::vector<float> bake_weights = {1.0f};
+      if (needs_split_blur) {
+        const float ratio = static_cast<float>(hist_w) / static_cast<float>(std::max<uint32_t>(1u, out_w));
+        const float net_sigma = std::clamp(inputs.params.detail_radius * ratio, 0.5f, 10.6f);
+        bake_weights = BuildGaussianWeights(net_sigma, &bake_radius);
+      }
+
+      KDetailComposeParams bp{};
+      bp.net_width = hist_w;
+      bp.net_height = hist_h;
+      bp.out_width = out_w;
+      bp.out_height = out_h;
+      bp.radius = bake_radius;
+      bp.scaled_network = scaled_net ? 1u : 0u;
+      bp.srgb_transfer = inputs.params.srgb_transfer ? 1u : 0u;
+      bp.detail_strength = detail_s;
+      bp.colour_strength = colour_s;
+      bp.intensity = intensity;
+
+      if (bake_radius > 0u) {
+        [enc setBuffer:delta_buf offset:delta_off atIndex:0];
+        [enc setBuffer:impl_->scratch_buf offset:s.base_net_rgb_off atIndex:1];
+        [enc setBytes:&bp length:sizeof(bp) atIndex:2];
+        [enc setBytes:bake_weights.data() length:bake_weights.size() * sizeof(float) atIndex:3];
+        dispatch_2d(impl_->pso_bake_delta_blur_h, hist_w, hist_h);
+        [enc memoryBarrierWithScope:MTLBarrierScopeBuffers];
+      }
+
+      [enc setBuffer:delta_buf offset:delta_off atIndex:0];
+      [enc setBuffer:impl_->scratch_buf offset:s.base_net_rgb_off atIndex:1];
+      [enc setTexture:inputs.export_baked_delta_texture atIndex:0];
+      [enc setBytes:&bp length:sizeof(bp) atIndex:2];
+      [enc setBytes:bake_weights.data() length:bake_weights.size() * sizeof(float) atIndex:3];
+      dispatch_2d(impl_->pso_bake_delta_tex, hist_w, hist_h);
+    }
 
     // Stage D: Optional Upsample & Separable Gaussian Detail-Split Composition.
     if (!direct_write && inputs.output_texture != nil) {
@@ -2867,6 +2927,64 @@ bool Context::encode_compose_delta(
       [enc dispatchThreadgroups:groups threadsPerThreadgroup:tpg];
     }
 
+    [enc endEncoding];
+    return true;
+  }
+}
+
+bool Context::encode_compose_baked_delta(
+    NRMetalTexture color_texture,
+    NRMetalTexture baked_delta_texture,
+    const FrameParams& params,
+    NRMetalTexture output_texture,
+    NRMetalCommandBuffer cmd,
+    std::string* out_error) {
+  @autoreleasepool {
+    if (!color_texture || !baked_delta_texture || !output_texture || !cmd) {
+      if (out_error) {
+        *out_error = "color_texture, baked_delta_texture, output_texture, and cmd are required";
+      }
+      return false;
+    }
+    if (color_texture == output_texture) {
+      if (out_error) *out_error = "color_texture and output_texture must be distinct textures";
+      return false;
+    }
+    const uint32_t out_w =
+        params.output_width > 0 ? params.output_width : static_cast<uint32_t>([output_texture width]);
+    const uint32_t out_h =
+        params.output_height > 0 ? params.output_height : static_cast<uint32_t>([output_texture height]);
+    if (out_w == 0 || out_h == 0 || out_w > [output_texture width] || out_h > [output_texture height]) {
+      if (out_error) *out_error = "invalid output dimensions in encode_compose_baked_delta";
+      return false;
+    }
+
+    KDetailComposeParams dcp{};
+    dcp.net_width = static_cast<uint32_t>([baked_delta_texture width]);
+    dcp.net_height = static_cast<uint32_t>([baked_delta_texture height]);
+    dcp.out_width = out_w;
+    dcp.out_height = out_h;
+    dcp.radius = 0;
+    dcp.scaled_network = 1u;
+    dcp.srgb_transfer = params.srgb_transfer ? 1u : 0u;
+    dcp.detail_strength = params.detail_strength;
+    dcp.colour_strength = params.colour_strength;
+    dcp.intensity = params.intensity;
+
+    id<MTLComputeCommandEncoder> enc =
+        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+    if (!enc) {
+      if (out_error) *out_error = "failed to create MTLComputeCommandEncoder in encode_compose_baked_delta";
+      return false;
+    }
+    enc.label = @"Netal NR Baked Delta Compose";
+    [enc setComputePipelineState:impl_->pso_compose_baked_tex];
+    [enc setTexture:color_texture atIndex:0];
+    [enc setTexture:baked_delta_texture atIndex:1];
+    [enc setTexture:output_texture atIndex:2];
+    [enc setBytes:&dcp length:sizeof(dcp) atIndex:0];
+    [enc dispatchThreadgroups:MTLSizeMake((out_w + 15u) / 16u, (out_h + 15u) / 16u, 1)
+        threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
     [enc endEncoding];
     return true;
   }

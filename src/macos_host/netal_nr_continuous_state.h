@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -47,6 +48,7 @@ struct ContinuousAdapterConfig {
   float colour = 1.0f;          // [0.0, 4.0]
   float intensity = 1.0f;       // [0.0, 1.0]
   bool async_worker = false;    // 0 | 1
+  uint32_t worker_interval_ms = 0; // [0, 1000] minimum ms between async worker completions/admissions
   bool hook_spatial = false;    // 0 | 1
   bool hook_drawable = false;   // 0 | 1
   bool valid = true;
@@ -129,6 +131,13 @@ struct ContinuousAdapterConfig {
     if (!parse_bool01(lookup("NETAL_NR_ASYNC"), out.async_worker)) {
       return fail("invalid NETAL_NR_ASYNC (expected 0 or 1)");
     }
+    if (const char* raw_iv = lookup("NETAL_NR_WORKER_INTERVAL_MS")) {
+      float iv_f = 0.0f;
+      if (!parse_float_in_range(raw_iv, 0.0f, 1000.0f, iv_f)) {
+        return fail("invalid NETAL_NR_WORKER_INTERVAL_MS (expected number in [0, 1000])");
+      }
+      out.worker_interval_ms = static_cast<uint32_t>(std::llround(iv_f));
+    }
     if (!parse_bool01(lookup("NETAL_NR_HOOK_SPATIAL"), out.hook_spatial)) {
       return fail("invalid NETAL_NR_HOOK_SPATIAL (expected 0 or 1)");
     }
@@ -148,6 +157,7 @@ struct ContinuousAdapterConfig {
     if (!std::isfinite(detail) || detail < 0.0f || detail > 8.0f) return false;
     if (!std::isfinite(colour) || colour < 0.0f || colour > 4.0f) return false;
     if (!std::isfinite(intensity) || intensity < 0.0f || intensity > 1.0f) return false;
+    if (worker_interval_ms > 1000u) return false;
     return true;
   }
 
@@ -248,6 +258,8 @@ private:
   bool oneshot_consumed_ = false;
   bool delayed_once_published_ = false;
   int32_t latest_ready_slot_ = -1;
+  bool has_last_complete_time_ = false;
+  std::chrono::steady_clock::time_point last_complete_time_{};
   std::array<SlotInfo, kNumSlots> slots_{};
   Telemetry telemetry_{};
 
@@ -257,6 +269,7 @@ private:
 
   void invalidate_deltas_locked() {
     latest_ready_slot_ = -1;
+    has_last_complete_time_ = false;
     for (auto& s : slots_) {
       s.valid_delta = false;
     }
@@ -472,6 +485,18 @@ public:
       return d;
     }
 
+    // Optional worker cadence throttle (NETAL_NR_WORKER_INTERVAL_MS): once at least one
+    // delta is ready, leave uncontended GPU headroom between background neural updates.
+    if (config_.mode == AdapterMode::Continuous && config_.worker_interval_ms > 0u &&
+        d.has_reusable_delta && has_last_complete_time_ && !force_reset_next_ && !game_reset) {
+      const auto elapsed = std::chrono::steady_clock::now() - last_complete_time_;
+      if (elapsed < std::chrono::milliseconds(config_.worker_interval_ms)) {
+        ++telemetry_.skipped_busy;
+        d.action = Action::ReuseLatestDelta;
+        return d;
+      }
+    }
+
     const uint32_t chosen = static_cast<uint32_t>(free_slot);
     const bool do_reset = force_reset_next_ || game_reset;
     force_reset_next_ = false;
@@ -508,6 +533,8 @@ public:
     if (generation == generation_ && !paused_ && is_enabled_locked()) {
       s.valid_delta = true;
       latest_ready_slot_ = static_cast<int32_t>(slot);
+      last_complete_time_ = std::chrono::steady_clock::now();
+      has_last_complete_time_ = true;
     } else {
       s.valid_delta = false;
     }

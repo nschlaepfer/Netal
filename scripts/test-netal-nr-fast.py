@@ -753,9 +753,18 @@ int main(int argc, char** argv) {
     const size_t delta_bytes = size_t(net_w) * net_h * 16u;
     id<MTLBuffer> delta_slot0 = [dev newBufferWithLength:delta_bytes options:MTLResourceStorageModePrivate];
     id<MTLBuffer> delta_slot1 = [dev newBufferWithLength:delta_bytes options:MTLResourceStorageModePrivate];
+    MTLTextureDescriptor* td_baked = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA16Float
+                                                                                        width:net_w
+                                                                                       height:net_h
+                                                                                    mipmapped:NO];
+    td_baked.storageMode = MTLStorageModePrivate;
+    td_baked.usage = MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite;
+    id<MTLTexture> baked_slot0 = [dev newTextureWithDescriptor:td_baked];
 
     double max_compose_fast_diff = 0.0;
     double max_compose_blur_diff = 0.0;
+    double max_baked_fast_diff = 0.0;
+    double max_baked_blur_diff = 0.0;
     double live_reuse_l1 = 0.0;
 
     for (int mode = 0; mode < 2; ++mode) {
@@ -764,6 +773,7 @@ int main(int argc, char** argv) {
       wfi.color_texture = col0;
       wfi.output_texture = out_ref;
       wfi.export_delta_buffer = delta_slot0;
+      wfi.export_baked_delta_texture = baked_slot0;
       wfi.params.output_width = out_w;
       wfi.params.output_height = out_h;
       wfi.params.network_width = net_w;
@@ -788,7 +798,7 @@ int main(int argc, char** argv) {
       [ccmd commit];
       [ccmd waitUntilCompleted];
 
-      std::vector<float> b_ref(out_w * out_h * 4u), b_cmp(out_w * out_h * 4u);
+      std::vector<float> b_ref(out_w * out_h * 4u), b_cmp(out_w * out_h * 4u), b_baked(out_w * out_h * 4u);
       [out_ref getBytes:b_ref.data() bytesPerRow:out_w * 16u fromRegion:MTLRegionMake2D(0, 0, out_w, out_h) mipmapLevel:0];
       [out_test getBytes:b_cmp.data() bytesPerRow:out_w * 16u fromRegion:MTLRegionMake2D(0, 0, out_w, out_h) mipmapLevel:0];
       double md = 0.0;
@@ -798,6 +808,24 @@ int main(int argc, char** argv) {
       }
       if (mode == 0) max_compose_fast_diff = md;
       else max_compose_blur_diff = md;
+
+      // Also verify single-pass hardware-bilinear baked delta composition!
+      [out_test replaceRegion:MTLRegionMake2D(0, 0, out_w, out_h) mipmapLevel:0 withBytes:nan_buf.data() bytesPerRow:out_w * 16u];
+      id<MTLCommandBuffer> bcmd = [q_main commandBuffer];
+      if (!ctx->encode_compose_baked_delta(col0, baked_slot0, wfi.params, out_test, bcmd, &err)) {
+        std::fprintf(stderr, "encode_compose_baked_delta failed: %s\n", err.c_str());
+        return 26 + mode;
+      }
+      [bcmd commit];
+      [bcmd waitUntilCompleted];
+      [out_test getBytes:b_baked.data() bytesPerRow:out_w * 16u fromRegion:MTLRegionMake2D(0, 0, out_w, out_h) mipmapLevel:0];
+      double mbd = 0.0;
+      for (size_t i = 0; i < b_ref.size(); ++i) {
+        if (!std::isfinite(b_baked[i])) return 28;
+        mbd = std::max(mbd, std::abs(double(b_ref[i]) - double(b_baked[i])));
+      }
+      if (mode == 0) max_baked_fast_diff = mbd;
+      else max_baked_blur_diff = mbd;
     }
 
     // 3. Concurrent async worker (output_texture == nil, writing delta_slot1) while display queue
@@ -860,8 +888,10 @@ int main(int argc, char** argv) {
 
     std::printf(
         "{\"max_mv_diff\":%.9g,\"max_compose_fast_diff\":%.9g,\"max_compose_blur_diff\":%.9g,"
+        "\"max_baked_fast_diff\":%.9g,\"max_baked_blur_diff\":%.9g,"
         "\"live_reuse_l1\":%.9g,\"compose_gpu_ms\":%.4f}\n",
-        max_mv_diff, max_compose_fast_diff, max_compose_blur_diff, live_reuse_l1, compose_gpu_ms);
+        max_mv_diff, max_compose_fast_diff, max_compose_blur_diff,
+        max_baked_fast_diff, max_baked_blur_diff, live_reuse_l1, compose_gpu_ms);
     return 0;
   }
 }
@@ -898,6 +928,8 @@ int main(int argc, char** argv) {
         self.assertEqual(res["max_mv_diff"], 0.0)
         self.assertEqual(res["max_compose_fast_diff"], 0.0)
         self.assertEqual(res["max_compose_blur_diff"], 0.0)
+        self.assertLess(res["max_baked_fast_diff"], 0.005)
+        self.assertLess(res["max_baked_blur_diff"], 0.02)
         self.assertGreater(res["live_reuse_l1"], 1e-4)
         self.assertLess(res["compose_gpu_ms"], 25.0)
 

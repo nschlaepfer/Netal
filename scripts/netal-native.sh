@@ -6,7 +6,7 @@ export PYTHONDONTWRITEBYTECODE=1
 script_dir="$(cd "$(dirname "$0")" && pwd)"
 repository="$(cd "$script_dir/.." && pwd)"
 app=""; observe=0; stage=1; sr=1; fg=1; check_only=0; want_output=""; steam_id=""
-nr_exp=0; nr_bridge_dir=""; nr_model=""; nr_scale=""; nr_async=1
+nr_exp=0; nr_bridge_dir=""; nr_model=""; nr_scale=""; nr_interval_ms=""; nr_async=1
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --observe) observe=1; shift ;;
@@ -16,12 +16,13 @@ while [[ $# -gt 0 ]]; do
     --check) check_only=1; shift ;;
     --nr-experimental) nr_exp=1; shift ;;
     --nr-inline) nr_async=0; shift ;;
-    --nr-bridge-dir|--nr-model|--nr-scale)
+    --nr-bridge-dir|--nr-model|--nr-scale|--nr-worker-interval-ms)
       [[ $# -ge 2 && -n "$2" ]] || { print -u2 "Missing value for $1"; exit 64; }
       case "$1" in
         --nr-bridge-dir) nr_bridge_dir="$2" ;;
         --nr-model) nr_model="$2" ;;
         --nr-scale) nr_scale="$2" ;;
+        --nr-worker-interval-ms) nr_interval_ms="$2" ;;
       esac
       shift 2 ;;
     --output|--steam-app-id)
@@ -230,6 +231,7 @@ if (( nr_exp && ! observe )); then
     --env "NETAL_NR_ASYNC=$nr_async"
   )
   [[ -z "$nr_scale" ]] || env_args+=(--env "NETAL_NR_SCALE=$nr_scale")
+  [[ -z "$nr_interval_ms" ]] || env_args+=(--env "NETAL_NR_WORKER_INTERVAL_MS=$nr_interval_ms")
 fi
 if (( ! observe && sr )); then
   env_args+=(

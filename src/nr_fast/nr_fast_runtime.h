@@ -127,10 +127,14 @@ struct FrameInputs {
   NRMetalTexture color_texture = nullptr;    // Required: RGB/RGBA read texture
   NRMetalTexture motion_texture = nullptr;   // Optional: RG motion texture
   NRMetalTexture depth_texture = nullptr;    // Optional: R depth texture
-  NRMetalTexture output_texture = nullptr;   // Required unless export_delta_buffer != nullptr
+  NRMetalTexture output_texture = nullptr;   // Required unless export_delta_buffer/texture != nullptr
   // Optional destination buffer (>= hist_w * hist_h * sizeof(float4)) receiving
   // post-temporal RGB delta (`nr_rgb - cur_rgb`) for async reuse via encode_compose_delta().
   NRMetalBuffer export_delta_buffer = nullptr;
+  // Optional destination RGBA16Float texture (hist_w x hist_h, ShaderWrite | ShaderRead)
+  // receiving pre-baked Gaussian colour/detail delta (`intensity * (colour*lowPass + detail*highPass)`)
+  // at network resolution for single-pass (<0.4 ms) hardware-bilinear display composition.
+  NRMetalTexture export_baked_delta_texture = nullptr;
   FrameParams params;
 };
 
@@ -251,6 +255,16 @@ class Context {
       NRMetalBuffer delta_net_buffer,
       uint32_t delta_width,
       uint32_t delta_height,
+      const FrameParams& params,
+      NRMetalTexture output_texture,
+      NRMetalCommandBuffer cmd,
+      std::string* out_error);
+
+  // Single-dispatch hardware-bilinear composition of a worker-baked RGBA16Float
+  // delta texture onto a ShaderWrite output texture (zero blur scratch buffers).
+  bool encode_compose_baked_delta(
+      NRMetalTexture color_texture,
+      NRMetalTexture baked_delta_texture,
       const FrameParams& params,
       NRMetalTexture output_texture,
       NRMetalCommandBuffer cmd,

@@ -152,12 +152,15 @@ struct BridgeRuntime {
   id<MTLLibrary> blit_library = nil;
   id<MTLFunction> blit_vs = nil;
   id<MTLFunction> blit_fs = nil;
+  id<MTLFunction> resize_fs = nil;
+  id<MTLFunction> compose_baked_fs = nil;
   std::map<NSUInteger, id<MTLRenderPipelineState>> blit_psos;
+  std::map<NSUInteger, id<MTLRenderPipelineState>> resize_psos;
+  std::map<NSUInteger, id<MTLRenderPipelineState>> compose_baked_psos;
 
   std::mutex stage_mutex;
   id<MTLTexture> inline_src_copy_tex = nil;
   id<MTLTexture> inline_composed_tex = nil;
-  id<MTLTexture> async_composed_tex = nil;
 
   std::mutex async_res_mutex;
   id<MTLCommandQueue> worker_queue = nil;
@@ -165,7 +168,7 @@ struct BridgeRuntime {
   std::atomic<uint64_t> worker_event_val{0};
   id<MTLTexture> worker_color_tex[ContinuousAdapterState::kNumSlots] = {nil, nil};
   id<MTLTexture> worker_motion_tex[ContinuousAdapterState::kNumSlots] = {nil, nil};
-  id<MTLBuffer> delta_slot_bufs[ContinuousAdapterState::kNumSlots] = {nil, nil};
+  id<MTLTexture> baked_delta_slot_tex[ContinuousAdapterState::kNumSlots] = {nil, nil};
   uint32_t delta_slot_w[ContinuousAdapterState::kNumSlots] = {0, 0};
   uint32_t delta_slot_h[ContinuousAdapterState::kNumSlots] = {0, 0};
 
@@ -305,52 +308,162 @@ id<MTLTexture> EnsurePrivateTex(
   return tex;
 }
 
-id<MTLRenderPipelineState> GetOrBuildBlitPSO(id<MTLDevice> dev, MTLPixelFormat pf) {
+void EnsureBridgeRenderFunctionsLocked(id<MTLDevice> dev) {
+  auto& rt = RT();
+  if (rt.blit_vs && rt.blit_fs && rt.resize_fs && rt.compose_baked_fs) return;
+  if (!rt.blit_library) {
+    NSString* fallback_src =
+        @"#include <metal_stdlib>\n"
+         "using namespace metal;\n"
+         "inline float l2s(float c) { float x=clamp(c,0.0f,1.0f); return x<=0.0031308f?(x*12.92f):(1.055f*precise::pow(x,1.0f/2.4f)-0.055f); }\n"
+         "inline float s2l(float c) { float x=clamp(c,0.0f,1.0f); return x<=0.04045f?(x/12.92f):precise::pow((x+0.055f)/1.055f,2.4f); }\n"
+         "struct VOut { float4 pos [[position]]; };\n"
+         "vertex VOut nr_bridge_blit_vs(uint vid [[vertex_id]]) {\n"
+         "  VOut o; float2 uv = float2((vid << 1u) & 2u, vid & 2u);\n"
+         "  o.pos = float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);\n"
+         "  return o;\n"
+         "}\n"
+         "fragment float4 nr_bridge_blit_fs(VOut in [[stage_in]], texture2d<float, access::read> t [[texture(0)]]) {\n"
+         "  return float4(t.read(uint2(in.pos.xy)).rgb, 1.0f);\n"
+         "}\n"
+         "fragment float4 nr_bridge_resize_fs(VOut in [[stage_in]], texture2d<float, access::sample> t [[texture(0)]], constant float2& inv [[buffer(0)]]) {\n"
+         "  constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);\n"
+         "  return float4(t.sample(s, in.pos.xy * inv).rgb, 1.0f);\n"
+         "}\n"
+         "fragment float4 nr_bridge_compose_baked_fs(VOut in [[stage_in]], texture2d<float, access::read> src [[texture(0)]], texture2d<float, access::sample> dtex [[texture(1)]], constant uint4& dims [[buffer(0)]]) {\n"
+         "  constexpr sampler s(coord::normalized, address::clamp_to_edge, filter::linear);\n"
+         "  float3 c = src.read(uint2(in.pos.xy)).rgb;\n"
+         "  if (dims.z != 0u) c = float3(l2s(c.x), l2s(c.y), l2s(c.z));\n"
+         "  float3 d = dtex.sample(s, in.pos.xy / float2(float(dims.x), float(dims.y))).rgb;\n"
+         "  float3 o = clamp(c + d, 0.0f, 1.0f);\n"
+         "  if (dims.z != 0u) o = float3(s2l(o.x), s2l(o.y), s2l(o.z));\n"
+         "  return float4(o, 1.0f);\n"
+         "}\n";
+    NSError* cerr = nil;
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+    rt.blit_library = [dev newLibraryWithSource:fallback_src options:opts error:&cerr];
+  }
+  if (rt.blit_library) {
+    if (!rt.blit_vs) rt.blit_vs = [rt.blit_library newFunctionWithName:@"nr_bridge_blit_vs"];
+    if (!rt.blit_fs) rt.blit_fs = [rt.blit_library newFunctionWithName:@"nr_bridge_blit_fs"];
+    if (!rt.resize_fs) rt.resize_fs = [rt.blit_library newFunctionWithName:@"nr_bridge_resize_fs"];
+    if (!rt.compose_baked_fs) rt.compose_baked_fs = [rt.blit_library newFunctionWithName:@"nr_bridge_compose_baked_fs"];
+  }
+}
+
+id<MTLRenderPipelineState> GetOrBuildRenderHelperPSO(
+    id<MTLDevice> dev,
+    MTLPixelFormat pf,
+    int kind) {
   auto& rt = RT();
   std::lock_guard<std::mutex> lock(rt.blit_mutex);
-  auto it = rt.blit_psos.find(static_cast<NSUInteger>(pf));
-  if (it != rt.blit_psos.end()) return it->second;
+  auto& cache = (kind == 0) ? rt.blit_psos : (kind == 1 ? rt.resize_psos : rt.compose_baked_psos);
+  auto it = cache.find(static_cast<NSUInteger>(pf));
+  if (it != cache.end()) return it->second;
 
-  if (!rt.blit_vs || !rt.blit_fs) {
-    if (!rt.blit_library) {
-      NSString* fallback_src =
-          @"#include <metal_stdlib>\n"
-           "using namespace metal;\n"
-           "struct VOut { float4 pos [[position]]; };\n"
-           "vertex VOut nr_bridge_blit_vs(uint vid [[vertex_id]]) {\n"
-           "  VOut o; float2 uv = float2((vid << 1u) & 2u, vid & 2u);\n"
-           "  o.pos = float4(uv * float2(2.0f, -2.0f) + float2(-1.0f, 1.0f), 0.0f, 1.0f);\n"
-           "  return o;\n"
-           "}\n"
-           "fragment float4 nr_bridge_blit_fs(VOut in [[stage_in]], texture2d<float, access::read> t [[texture(0)]]) {\n"
-           "  return float4(t.read(uint2(in.pos.xy)).rgb, 1.0f);\n"
-           "}\n";
-      NSError* cerr = nil;
-      MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-      rt.blit_library = [dev newLibraryWithSource:fallback_src options:opts error:&cerr];
-    }
-    if (rt.blit_library) {
-      rt.blit_vs = [rt.blit_library newFunctionWithName:@"nr_bridge_blit_vs"];
-      rt.blit_fs = [rt.blit_library newFunctionWithName:@"nr_bridge_blit_fs"];
-    }
-  }
-  if (!rt.blit_vs || !rt.blit_fs) return nil;
+  EnsureBridgeRenderFunctionsLocked(dev);
+  id<MTLFunction> fs = (kind == 0) ? rt.blit_fs : (kind == 1 ? rt.resize_fs : rt.compose_baked_fs);
+  if (!rt.blit_vs || !fs) return nil;
 
   MTLRenderPipelineDescriptor* rpd = [[MTLRenderPipelineDescriptor alloc] init];
-  rpd.label = @"netal.nr.fast.bridge.blit";
+  rpd.label = (kind == 0) ? @"netal.nr.fast.bridge.blit"
+                          : (kind == 1 ? @"netal.nr.fast.bridge.resize" : @"netal.nr.fast.bridge.compose_baked");
   rpd.vertexFunction = rt.blit_vs;
-  rpd.fragmentFunction = rt.blit_fs;
+  rpd.fragmentFunction = fs;
   rpd.colorAttachments[0].pixelFormat = pf;
   NSError* perr = nil;
   id<MTLRenderPipelineState> pso = [dev newRenderPipelineStateWithDescriptor:rpd error:&perr];
   if (pso) {
-    rt.blit_psos[static_cast<NSUInteger>(pf)] = pso;
+    cache[static_cast<NSUInteger>(pf)] = pso;
   } else {
-    Log("event=blit_pso_failed format=%lu error=%s",
+    Log("event=blit_pso_failed kind=%d format=%lu error=%s",
+        kind,
         static_cast<unsigned long>(pf),
         perr ? perr.localizedDescription.UTF8String : "unknown");
   }
   return pso;
+}
+
+id<MTLRenderPipelineState> GetOrBuildBlitPSO(id<MTLDevice> dev, MTLPixelFormat pf) {
+  return GetOrBuildRenderHelperPSO(dev, pf, 0);
+}
+
+bool EncodeRenderResize(
+    id<MTLDevice> dev,
+    id<MTLCommandBuffer> cb,
+    id<MTLTexture> src_tex,
+    id<MTLTexture> dst_tex) {
+  if (!src_tex || !dst_tex) return false;
+  if (src_tex.width == dst_tex.width && src_tex.height == dst_tex.height &&
+      src_tex.pixelFormat == dst_tex.pixelFormat) {
+    id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+    if (!blit) return false;
+    [blit copyFromTexture:src_tex
+              sourceSlice:0
+              sourceLevel:0
+             sourceOrigin:MTLOriginMake(0, 0, 0)
+               sourceSize:MTLSizeMake(dst_tex.width, dst_tex.height, 1)
+                toTexture:dst_tex
+         destinationSlice:0
+         destinationLevel:0
+        destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [blit endEncoding];
+    return true;
+  }
+  if ((dst_tex.usage & MTLTextureUsageRenderTarget) == 0) return false;
+  id<MTLRenderPipelineState> pso = GetOrBuildRenderHelperPSO(dev, dst_tex.pixelFormat, 1);
+  if (!pso) return false;
+  MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = dst_tex;
+  pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> renc = [cb renderCommandEncoderWithDescriptor:pass];
+  if (!renc) return false;
+  renc.label = @"Netal NR Async Input Downsample";
+  const float inv_dst[2] = {
+      1.0f / static_cast<float>(std::max<NSUInteger>(1, dst_tex.width)),
+      1.0f / static_cast<float>(std::max<NSUInteger>(1, dst_tex.height)),
+  };
+  [renc setRenderPipelineState:pso];
+  [renc setFragmentTexture:src_tex atIndex:0];
+  [renc setFragmentBytes:inv_dst length:sizeof(inv_dst) atIndex:0];
+  [renc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [renc endEncoding];
+  return true;
+}
+
+bool EncodeRenderComposeBakedToOutput(
+    id<MTLDevice> dev,
+    id<MTLCommandBuffer> cb,
+    id<MTLTexture> src_tex,
+    id<MTLTexture> baked_delta_tex,
+    bool srgb_transfer,
+    id<MTLTexture> dst_tex) {
+  if (!src_tex || !baked_delta_tex || !dst_tex || (dst_tex.usage & MTLTextureUsageRenderTarget) == 0) {
+    return false;
+  }
+  id<MTLRenderPipelineState> pso = GetOrBuildRenderHelperPSO(dev, dst_tex.pixelFormat, 2);
+  if (!pso) return false;
+  MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
+  pass.colorAttachments[0].texture = dst_tex;
+  pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
+  pass.colorAttachments[0].storeAction = MTLStoreActionStore;
+  id<MTLRenderCommandEncoder> renc = [cb renderCommandEncoderWithDescriptor:pass];
+  if (!renc) return false;
+  renc.label = @"Netal NR Single-Pass Baked Delta Compose";
+  const uint32_t dims[4] = {
+      static_cast<uint32_t>(dst_tex.width),
+      static_cast<uint32_t>(dst_tex.height),
+      srgb_transfer ? 1u : 0u,
+      0u,
+  };
+  [renc setRenderPipelineState:pso];
+  [renc setFragmentTexture:src_tex atIndex:0];
+  [renc setFragmentTexture:baked_delta_tex atIndex:1];
+  [renc setFragmentBytes:dims length:sizeof(dims) atIndex:0];
+  [renc drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+  [renc endEncoding];
+  return true;
 }
 
 bool EncodeRenderBlitToOutput(
@@ -453,10 +566,14 @@ void DoPrepareOnThread(id<MTLDevice> device) {
     if (lib) {
       id<MTLFunction> vs = [lib newFunctionWithName:@"nr_bridge_blit_vs"];
       id<MTLFunction> fs = [lib newFunctionWithName:@"nr_bridge_blit_fs"];
+      id<MTLFunction> rfs = [lib newFunctionWithName:@"nr_bridge_resize_fs"];
+      id<MTLFunction> cfs = [lib newFunctionWithName:@"nr_bridge_compose_baked_fs"];
       if (vs && fs) {
         rt.blit_library = lib;
         rt.blit_vs = vs;
         rt.blit_fs = fs;
+        rt.resize_fs = rfs;
+        rt.compose_baked_fs = cfs;
       }
     }
   }
@@ -836,7 +953,7 @@ bool ProcessFrameOnCommandBuffer(
     id<MTLSharedEvent> wev = nil;
     id<MTLTexture> w_col = nil;
     id<MTLTexture> w_mv = nil;
-    id<MTLBuffer> w_delta = nil;
+    id<MTLTexture> w_baked = nil;
 
     {
       std::lock_guard<std::mutex> alock(rt.async_res_mutex);
@@ -845,13 +962,17 @@ bool ProcessFrameOnCommandBuffer(
       wq = rt.worker_queue;
       wev = rt.worker_event;
 
+      // Stage worker input directly at (network_width, network_height) so both input
+      // staging and OpticalFlowSynthesizer execute at network scale instead of full 3.5K/4K.
+      const MTLPixelFormat stage_pf =
+          (src_color.pixelFormat == MTLPixelFormatRGBA16Float) ? MTLPixelFormatRGBA16Float : MTLPixelFormatRGBA8Unorm;
       rt.worker_color_tex[d.slot] = EnsurePrivateTex(
           dev,
           rt.worker_color_tex[d.slot],
-          src_color.pixelFormat,
-          static_cast<uint32_t>(src_color.width),
-          static_cast<uint32_t>(src_color.height),
-          MTLTextureUsageShaderRead,
+          stage_pf,
+          d.network_width,
+          d.network_height,
+          MTLTextureUsageShaderRead | MTLTextureUsageRenderTarget,
           @"netal.nr.fast.worker_color");
       w_col = rt.worker_color_tex[d.slot];
 
@@ -867,41 +988,36 @@ bool ProcessFrameOnCommandBuffer(
         w_mv = rt.worker_motion_tex[d.slot];
       }
 
-      const size_t delta_bytes = static_cast<size_t>(d.network_width) * d.network_height * 16u;
-      if (!rt.delta_slot_bufs[d.slot] || [rt.delta_slot_bufs[d.slot] length] < delta_bytes) {
-        rt.delta_slot_bufs[d.slot] =
-            [dev newBufferWithLength:delta_bytes options:MTLResourceStorageModePrivate];
-      }
-      w_delta = rt.delta_slot_bufs[d.slot];
+      rt.baked_delta_slot_tex[d.slot] = EnsurePrivateTex(
+          dev,
+          rt.baked_delta_slot_tex[d.slot],
+          MTLPixelFormatRGBA16Float,
+          d.network_width,
+          d.network_height,
+          MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite,
+          @"netal.nr.fast.baked_delta");
+      w_baked = rt.baked_delta_slot_tex[d.slot];
       rt.delta_slot_w[d.slot] = d.network_width;
       rt.delta_slot_h[d.slot] = d.network_height;
     }
 
-    if (wq && wev && w_col && w_delta && (!has_native_motion || w_mv)) {
-      id<MTLBlitCommandEncoder> blit = [game_cb blitCommandEncoder];
-      if (blit) {
-        blit.label = @"Netal NR Async Input Stage";
-        [blit copyFromTexture:src_color
-                  sourceSlice:0
-                  sourceLevel:0
-                 sourceOrigin:MTLOriginMake(0, 0, 0)
-                   sourceSize:MTLSizeMake(src_color.width, src_color.height, 1)
-                    toTexture:w_col
-             destinationSlice:0
-             destinationLevel:0
-            destinationOrigin:MTLOriginMake(0, 0, 0)];
+    if (wq && wev && w_col && w_baked && (!has_native_motion || w_mv)) {
+      if (EncodeRenderResize(dev, game_cb, src_color, w_col)) {
         if (has_native_motion && w_mv) {
-          [blit copyFromTexture:native_motion
-                    sourceSlice:0
-                    sourceLevel:0
-                   sourceOrigin:MTLOriginMake(0, 0, 0)
-                     sourceSize:MTLSizeMake(native_motion.width, native_motion.height, 1)
-                      toTexture:w_mv
-               destinationSlice:0
-               destinationLevel:0
-              destinationOrigin:MTLOriginMake(0, 0, 0)];
+          id<MTLBlitCommandEncoder> blit = [game_cb blitCommandEncoder];
+          if (blit) {
+            [blit copyFromTexture:native_motion
+                      sourceSlice:0
+                      sourceLevel:0
+                     sourceOrigin:MTLOriginMake(0, 0, 0)
+                       sourceSize:MTLSizeMake(native_motion.width, native_motion.height, 1)
+                        toTexture:w_mv
+                 destinationSlice:0
+                 destinationLevel:0
+                destinationOrigin:MTLOriginMake(0, 0, 0)];
+            [blit endEncoding];
+          }
         }
-        [blit endEncoding];
 
         const uint64_t sig_val = ++rt.worker_event_val;
         [game_cb encodeSignalEvent:wev value:sig_val];
@@ -931,7 +1047,7 @@ bool ProcessFrameOnCommandBuffer(
             w_fi.color_texture = w_col;
             w_fi.motion_texture = motion_for_worker;
             w_fi.output_texture = nil;
-            w_fi.export_delta_buffer = w_delta;
+            w_fi.export_baked_delta_texture = w_baked;
             w_fi.params = BuildFastParams(
                 out_w, out_h, d.network_width, d.network_height,
                 frame_id, d.reset, w_mv_sx, w_mv_sy, effective_srgb, depth_inverted);
@@ -964,42 +1080,34 @@ bool ProcessFrameOnCommandBuffer(
     }
   }
 
-  // ---- FAST CACHED DELTA COMPOSITION ON LIVE DISPLAY FRAME (~0.2 ms) ----
+  // ---- SINGLE-PASS BAKED DELTA COMPOSITION ON LIVE DISPLAY FRAME (~0.25 ms) ----
   if (d.has_reusable_delta) {
-    id<MTLBuffer> r_buf = nil;
+    id<MTLTexture> r_baked = nil;
     uint32_t r_w = 0, r_h = 0;
     {
       std::lock_guard<std::mutex> alock(rt.async_res_mutex);
-      r_buf = rt.delta_slot_bufs[d.reusable_slot];
+      r_baked = rt.baked_delta_slot_tex[d.reusable_slot];
       r_w = rt.delta_slot_w[d.reusable_slot];
       r_h = rt.delta_slot_h[d.reusable_slot];
     }
 
-    if (r_buf && r_w > 0 && r_h > 0) {
-      const bool direct_shader_write = CanShaderWriteDirectly(dst_output);
-      id<MTLTexture> cmp_target = dst_output;
-      if (!direct_shader_write) {
-        std::lock_guard<std::mutex> slock(rt.stage_mutex);
-        rt.async_composed_tex = EnsurePrivateTex(
-            dev,
-            rt.async_composed_tex,
-            MTLPixelFormatRGBA16Float,
-            out_w,
-            out_h,
-            MTLTextureUsageShaderRead | MTLTextureUsageShaderWrite,
-            @"netal.nr.fast.async_composed");
-        cmp_target = rt.async_composed_tex;
-      }
-
-      if (cmp_target) {
+    if (r_baked && r_w > 0 && r_h > 0) {
+      bool composed_ok = false;
+      if ((dst_output.usage & MTLTextureUsageRenderTarget) != 0) {
+        composed_ok = EncodeRenderComposeBakedToOutput(
+            dev, game_cb, src_color, r_baked, effective_srgb, dst_output);
+      } else if (CanShaderWriteDirectly(dst_output)) {
         netal_nr_fast::FrameParams cparams = BuildFastParams(
             out_w, out_h, r_w, r_h, frame_id, false, 1.0f, 1.0f, effective_srgb, depth_inverted);
         std::string cerr;
-        if (rt.nr_ctx->encode_compose_delta(src_color, r_buf, r_w, r_h, cparams, cmp_target, game_cb, &cerr)) {
-          if (direct_shader_write || EncodeRenderBlitToOutput(dev, game_cb, cmp_target, dst_output)) {
-            const uint64_t gen = d.generation;
-            const uint64_t r_frame = d.reusable_frame;
-            [game_cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
+        composed_ok = rt.nr_ctx->encode_compose_baked_delta(
+            src_color, r_baked, cparams, dst_output, game_cb, &cerr);
+      }
+
+      if (composed_ok) {
+        const uint64_t gen = d.generation;
+        const uint64_t r_frame = d.reusable_frame;
+        [game_cb addCompletedHandler:^(id<MTLCommandBuffer> done) {
               auto& cbrt = RT();
               const bool ok = (done.status == MTLCommandBufferStatusCompleted);
               const double disp_ms =
@@ -1036,9 +1144,7 @@ bool ProcessFrameOnCommandBuffer(
                 }
               }
             }];
-            return true;
-          }
-        }
+        return true;
       }
     }
   }
