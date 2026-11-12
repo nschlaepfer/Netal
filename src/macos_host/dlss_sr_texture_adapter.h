@@ -81,6 +81,29 @@ FOUNDATION_EXPORT NSErrorDomain const NeuralStudioDLSSTextureAdapterErrorDomain;
                               depthReversed:(BOOL)depthReversed
                                       error:(NSError**)error;
 
+/// Requires an explicitly managed session. Reserves both table rings before import/mutation.
+/// Returns its lease even on partial failure: abandon the entire unsubmitted recording, then
+/// explicitly discard. Success includes the private GPU marker after export, never at commit.
+- (BOOL)encodeManagedTemporalFrameToMTL4CommandBuffer:(id<MTL4CommandBuffer>)commandBuffer
+                                      allocator:(id<MTL4CommandAllocator>)allocator
+                                      queue:(id<MTL4CommandQueue>)queue
+                               colorTexture:(id<MTLTexture>)colorTexture
+                              motionTexture:(id<MTLTexture>)motionTexture
+                               depthTexture:(id<MTLTexture>)depthTexture
+                            exposureTexture:(nullable id<MTLTexture>)exposureTexture
+                              outputTexture:(id<MTLTexture>)outputTexture
+                          inputContentWidth:(NSUInteger)inputContentWidth
+                         inputContentHeight:(NSUInteger)inputContentHeight
+                              jitterOffsetX:(float)jitterOffsetX
+                              jitterOffsetY:(float)jitterOffsetY
+                         motionVectorScaleX:(float)motionVectorScaleX
+                         motionVectorScaleY:(float)motionVectorScaleY
+                                preExposure:(float)preExposure
+                                      reset:(BOOL)reset
+                              depthReversed:(BOOL)depthReversed
+                                      lease:(NeuralStudioDLSSSRFrameLease* _Nullable * _Nonnull)lease
+                                      error:(NSError**)error;
+
 @end
 
 NS_ASSUME_NONNULL_END

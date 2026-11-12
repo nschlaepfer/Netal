@@ -1,4 +1,6 @@
 #import "dlss_sr_texture_adapter.h"
+#import "dlss_sr_managed_internal.h"
+#include <mutex>
 
 #include <cmath>
 #include <cstdlib>
@@ -81,6 +83,8 @@ BOOL TextureAtLeast(id<MTLTexture> texture, NSUInteger width, NSUInteger height,
   __strong id<MTLBuffer> _metal4_constants;
   NSMutableArray<id<MTL4ArgumentTable>>* _metal4_tables;
   NSUInteger _metal4_slot;
+  std::mutex _managedMutex;
+  __strong id<MTLBuffer> _managedNeutralExposure;
   __strong id<MTLComputePipelineState> _import_color_pipeline;
   // Import/export variants for games whose MetalFX textures are not RGB9E5, keyed by pixel format.
   // Empty for a runtime bundle predating netal_texture_import_ext.metallib, in which case such a
@@ -193,6 +197,7 @@ static constexpr NSUInteger kMetal4Slots = 6;
   if (_metal4_residency != nil) return YES;
   if (![_device supportsFamily:MTLGPUFamilyMetal4]) return NO;
   _metal4_constants = [_device newBufferWithLength:64 options:MTLResourceStorageModeShared];
+  if (_metal4_constants == nil) return NO;
   std::uint32_t* constants = static_cast<std::uint32_t*>(_metal4_constants.contents);
   constants[0] = static_cast<std::uint32_t>(kInputWidth);
   constants[1] = static_cast<std::uint32_t>(kInputHeight);
@@ -330,6 +335,73 @@ static constexpr NSUInteger kMetal4Slots = 6;
                                        reset:(BOOL)reset
                                depthReversed:(BOOL)depth_reversed
                                        error:(NSError**)error {
+  if (_session.managedMTL4FramesEnabled) { SetError(error, 60, @"legacy adapter unavailable in managed mode"); return NO; }
+  return [self neuralStudioEncodeTemporalFrameToMTL4CommandBuffer:command colorTexture:color motionTexture:motion depthTexture:depth exposureTexture:exposure
+      outputTexture:output inputContentWidth:content_width inputContentHeight:content_height
+      jitterOffsetX:jitter_x jitterOffsetY:jitter_y motionVectorScaleX:motion_scale_x motionVectorScaleY:motion_scale_y
+      preExposure:pre_exposure reset:reset depthReversed:depth_reversed managedLease:nil error:error];
+}
+- (BOOL)encodeManagedTemporalFrameToMTL4CommandBuffer:(id<MTL4CommandBuffer>)command
+                                       allocator:(id<MTL4CommandAllocator>)allocator
+                                       queue:(id<MTL4CommandQueue>)queue
+                                colorTexture:(id<MTLTexture>)color
+                               motionTexture:(id<MTLTexture>)motion
+                                depthTexture:(id<MTLTexture>)depth
+                             exposureTexture:(id<MTLTexture>)exposure
+                               outputTexture:(id<MTLTexture>)output
+                           inputContentWidth:(NSUInteger)content_width
+                          inputContentHeight:(NSUInteger)content_height
+                               jitterOffsetX:(float)jitter_x
+                               jitterOffsetY:(float)jitter_y
+                          motionVectorScaleX:(float)motion_scale_x
+                          motionVectorScaleY:(float)motion_scale_y
+                                 preExposure:(float)pre_exposure
+                                       reset:(BOOL)reset
+                               depthReversed:(BOOL)depth_reversed
+                                       lease:(NeuralStudioDLSSSRFrameLease**)out_lease
+                                       error:(NSError**)error {
+  if (out_lease == nullptr) { SetError(error, 60, @"managed lease output is required"); return NO; }
+  *out_lease = nil;
+  std::lock_guard<std::mutex> lock(_managedMutex);
+  NeuralStudioDLSSSRFrameLease* lease = [_session newManagedFrameLeaseForCommandBuffer:command allocator:allocator queue:queue reset:reset error:error];
+  if (lease == nil) return NO;
+  *out_lease = lease; // partial failures retain ownership until explicit whole-recording discard
+  if (![_session neuralStudioBeginManagedLease:lease error:error]) return NO;
+  BOOL encoded = NO;
+  @try {
+  NSMutableArray* resources = [NSMutableArray arrayWithObject:self];
+  id optional_resources[] = {color, motion, depth, exposure, output, self.pendingFence};
+  for (id resource : optional_resources) if (resource != nil) [resources addObject:resource];
+  if (![_session neuralStudioRetainManagedResources:resources lease:lease error:error]) {
+    [_session neuralStudioFailManagedLease:lease]; return NO;
+  }
+    encoded = [self neuralStudioEncodeTemporalFrameToMTL4CommandBuffer:command colorTexture:color motionTexture:motion depthTexture:depth exposureTexture:exposure
+      outputTexture:output inputContentWidth:content_width inputContentHeight:content_height
+      jitterOffsetX:jitter_x jitterOffsetY:jitter_y motionVectorScaleX:motion_scale_x motionVectorScaleY:motion_scale_y
+      preExposure:pre_exposure reset:reset depthReversed:depth_reversed managedLease:lease error:error];
+  } @catch (...) {
+    SetError(error, 60, @"managed adapter encoding exception; abandon recording");
+  }
+  if (!encoded) [_session neuralStudioFailManagedLease:lease];
+  return encoded;
+}
+- (BOOL)neuralStudioEncodeTemporalFrameToMTL4CommandBuffer:(id<MTL4CommandBuffer>)command
+                                colorTexture:(id<MTLTexture>)color
+                               motionTexture:(id<MTLTexture>)motion
+                                depthTexture:(id<MTLTexture>)depth
+                             exposureTexture:(id<MTLTexture>)exposure
+                               outputTexture:(id<MTLTexture>)output
+                           inputContentWidth:(NSUInteger)content_width
+                          inputContentHeight:(NSUInteger)content_height
+                               jitterOffsetX:(float)jitter_x
+                               jitterOffsetY:(float)jitter_y
+                          motionVectorScaleX:(float)motion_scale_x
+                          motionVectorScaleY:(float)motion_scale_y
+                                 preExposure:(float)pre_exposure
+                                       reset:(BOOL)reset
+                               depthReversed:(BOOL)depth_reversed
+                                managedLease:(NeuralStudioDLSSSRFrameLease*)managedLease
+                                       error:(NSError**)error {
   if (command == nil) {
     SetError(error, 3, @"Metal 4 command buffer missing");
     return NO;
@@ -379,16 +451,34 @@ static constexpr NSUInteger kMetal4Slots = 6;
     SetError(error, 33, @"Metal 4 unavailable on this device");
     return NO;
   }
-  if (exposure == nil) {
+  id<MTLBuffer> frame_exposure = _exposure;
+  if (exposure == nil && managedLease != nil) {
+    if (_managedNeutralExposure == nil) {
+      const float one = 1.0f;
+      _managedNeutralExposure = [_device newBufferWithBytes:&one length:sizeof(one) options:MTLResourceStorageModeShared];
+      if (_managedNeutralExposure != nil) {
+        [_metal4_residency addAllocation:_managedNeutralExposure]; [_metal4_residency commit];
+      }
+    }
+    if (_managedNeutralExposure == nil) { SetError(error, 61, @"managed neutral exposure allocation failed"); return NO; }
+    frame_exposure = _managedNeutralExposure;
+  } else if (exposure == nil) {
     std::memset(_exposure.contents, 0, _exposure.length);
     *static_cast<float*>(_exposure.contents) = 1.0f;
   }
-  const NSUInteger slot = _metal4_slot++ % kMetal4Slots;
+  const NSUInteger slot = managedLease != nil ? [_session neuralStudioManagedSlotForLease:managedLease]
+                                             : _metal4_slot++ % kMetal4Slots;
+  if (slot == NSNotFound || slot >= kMetal4Slots) {
+    SetError(error, 62, @"managed adapter table reservation unavailable before import"); return NO;
+  }
   id<MTL4ArgumentTable> table_color = _metal4_tables[slot * 3];
   id<MTL4ArgumentTable> table_exposure = _metal4_tables[slot * 3 + 1];
   id<MTL4ArgumentTable> table_export = _metal4_tables[slot * 3 + 2];
   [command useResidencySet:_metal4_residency];
 
+  id<MTLFence> fence = self.pendingFence;
+  if (managedLease != nil && fence != nil &&
+      ![_session neuralStudioRetainManagedResources:@[fence] lease:managedLease error:error]) return NO;
   // Import: RGB9E5 color -> RGBA16F buffer, exposure texel, motion and depth copies.
   id<MTL4ComputeCommandEncoder> import_encoder = [command computeCommandEncoder];
   if (import_encoder == nil) {
@@ -398,7 +488,6 @@ static constexpr NSUInteger kMetal4Slots = 6;
   [import_encoder barrierAfterQueueStages:MTLStageAll
                              beforeStages:(MTLStageDispatch | MTLStageBlit)
                         visibilityOptions:MTL4VisibilityOptionDevice];
-  id<MTLFence> fence = self.pendingFence;
   if (fence != nil) [import_encoder waitForFence:fence beforeEncoderStages:(MTLStageDispatch | MTLStageBlit)];
   [table_color setAddress:_color.gpuAddress atIndex:0];
   [table_color setAddress:_metal4_constants.gpuAddress atIndex:1];
@@ -435,14 +524,30 @@ static constexpr NSUInteger kMetal4Slots = 6;
                           options:MTLBlitOptionDepthFromDepthStencil];
   [import_encoder endEncoding];
 
-  if (![_session encodeFrameToMTL4CommandBuffer:command
+  const BOOL session_encoded = managedLease != nil ? [_session neuralStudioEncodeManagedFrameWithLease:managedLease
                                     colorBuffer:_color
                                     colorOffset:0
                                    motionBuffer:_motion
                                    motionOffset:0
                                     depthBuffer:_depth
                                     depthOffset:0
-                                 exposureBuffer:_exposure
+                                 exposureBuffer:frame_exposure
+                                 exposureOffset:0
+                                   outputBuffer:_output
+                                   outputOffset:0
+                                  jitterOffsetX:jitter_x
+                                  jitterOffsetY:jitter_y
+                             motionVectorScaleX:motion_scale_x
+                             motionVectorScaleY:motion_scale_y
+                                  depthReversed:depth_reversed
+                                          error:error] : [_session encodeFrameToMTL4CommandBuffer:command
+                                    colorBuffer:_color
+                                    colorOffset:0
+                                   motionBuffer:_motion
+                                   motionOffset:0
+                                    depthBuffer:_depth
+                                    depthOffset:0
+                                 exposureBuffer:frame_exposure
                                  exposureOffset:0
                                    outputBuffer:_output
                                    outputOffset:0
@@ -452,9 +557,8 @@ static constexpr NSUInteger kMetal4Slots = 6;
                              motionVectorScaleY:motion_scale_y
                                           reset:reset
                                   depthReversed:depth_reversed
-                                          error:error]) {
-    return NO;
-  }
+                                          error:error];
+  if (!session_encoded) return NO;
 
   // Export: RGBA16F output buffer -> the game's RGB9E5 output texture.
   id<MTL4ComputeCommandEncoder> export_encoder = [command computeCommandEncoder];
@@ -474,7 +578,7 @@ static constexpr NSUInteger kMetal4Slots = 6;
             threadsPerThreadgroup:MTLSizeMake(16, 16, 1)];
   if (fence != nil) [export_encoder updateFence:fence afterEncoderStages:MTLStageDispatch];
   [export_encoder endEncoding];
-  return YES;
+  return managedLease == nil || [_session neuralStudioFinishManagedFrameLease:managedLease error:error];
 }
 
 - (id<MTLBuffer>)diagnosticModelOutputBuffer { return _output; }
@@ -499,6 +603,7 @@ static constexpr NSUInteger kMetal4Slots = 6;
                                    reset:(BOOL)reset
                            depthReversed:(BOOL)depth_reversed
                                    error:(NSError**)error {
+  if (_session.managedMTL4FramesEnabled) { SetError(error, 60, @"legacy adapter unavailable in managed mode"); return NO; }
   if (command == nil || command.device != _device) {
     SetError(error, 3, @"command buffer device mismatch");
     return NO;
@@ -702,6 +807,7 @@ static constexpr NSUInteger kMetal4Slots = 6;
                                    reset:(BOOL)reset
                            depthReversed:(BOOL)depth_reversed
                                    error:(NSError**)error {
+  if (_session.managedMTL4FramesEnabled) { SetError(error, 60, @"legacy adapter unavailable in managed mode"); return NO; }
   if (command == nil || command.device != _device) {
     SetError(error, 3, @"command buffer device mismatch");
     return NO;

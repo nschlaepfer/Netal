@@ -1,4 +1,7 @@
 #import "dlss_sr_session.h"
+#import "dlss_sr_managed_internal.h"
+#include "dlss_sr_frame_ledger.h"
+#include "dlss_sr_neural_backend.h"
 #import <TargetConditionals.h>
 #if TARGET_OS_IOS
 #import "../ios_host/netal_ios_sr_capabilities.h"
@@ -25,7 +28,140 @@
 NSErrorDomain const NeuralStudioDLSSSRSessionErrorDomain =
     @"NeuralStudioDLSSSRSessionError";
 
+@interface NeuralStudioDLSSSRFrameLease () {
+ @public // implementation-private, absent from the installed public interface
+  __strong NeuralStudioDLSSSRSession* _owner;
+  __strong id<MTL4CommandBuffer> _command;
+  __strong id<MTL4CommandQueue> _queue;
+  __strong id<MTLBuffer> _markerSource;
+  __strong id<MTLBuffer> _markerDestination;
+  __strong id<MTLResidencySet> _markerResidency;
+  __strong NSMutableArray* _resources;
+  netal::sr::FrameToken _token;
+  bool _reset, _finalized;
+  std::atomic<NeuralStudioDLSSSRManagedFrameStatus> _cachedStatus;
+}
+- (instancetype)initPrivate;
+@end
+@implementation NeuralStudioDLSSSRFrameLease
+- (instancetype)initPrivate { self = [super init]; if (self != nil) _cachedStatus.store(NeuralStudioDLSSSRManagedFrameReserved); return self; }
+- (uint64_t)sequence { return _token.sequence; }
+- (uint64_t)scheduledFrameIndex { return _token.frame; }
+- (BOOL)isRetired { return _cachedStatus.load() == NeuralStudioDLSSSRManagedFrameRetired; }
+- (NeuralStudioDLSSSRManagedFrameStatus)status { return _cachedStatus.load(); }
+@end
+
+@interface NeuralStudioDLSSSRNeuralCoreEncodingContext () {
+  NeuralStudioDLSSSRFrameLease* _lease;
+  __weak NeuralStudioDLSSSRSession* _encodingOwner;
+  id<NeuralStudioDLSSSRPreparedNeuralCoreInvocation> _invocation;
+  id<MTL4CommandBuffer> _contextCommand;
+  id<MTLBuffer> _inputView, _outputView;
+  netal::sr::FeatureLayout _inputLayoutView, _outputLayoutView;
+  NSUInteger _contextPhase; BOOL _contextReset;
+  std::mutex _claimMutex; bool _claimed, _closed;
+}
+- (instancetype)initWithLease:(NeuralStudioDLSSSRFrameLease*)lease invocation:(id<NeuralStudioDLSSSRPreparedNeuralCoreInvocation>)invocation
+    input:(id<MTLBuffer>)input output:(id<MTLBuffer>)output
+    inputLayout:(netal::sr::FeatureLayout)inputLayout outputLayout:(netal::sr::FeatureLayout)outputLayout;
+- (void)closeEncodingContext;
+- (BOOL)didClaimCommandBuffer;
+@end
+@implementation NeuralStudioDLSSSRNeuralCoreEncodingContext
+- (instancetype)initWithLease:(NeuralStudioDLSSSRFrameLease*)lease invocation:(id<NeuralStudioDLSSSRPreparedNeuralCoreInvocation>)invocation
+    input:(id<MTLBuffer>)input output:(id<MTLBuffer>)output
+    inputLayout:(netal::sr::FeatureLayout)inputLayout outputLayout:(netal::sr::FeatureLayout)outputLayout {
+  self = [super init]; if (self == nil) return nil;
+  if (lease.status != NeuralStudioDLSSSRManagedFrameEncoding || invocation == nil || input == nil || output == nil ||
+      !inputLayout.bounded() || !outputLayout.bounded() || inputLayout.bytes > input.length || outputLayout.bytes > output.length) return nil;
+  _lease = lease; _encodingOwner = lease->_owner; _invocation = invocation; _contextCommand = lease->_command;
+  _inputView = input; _outputView = output; _inputLayoutView = inputLayout; _outputLayoutView = outputLayout;
+  _contextPhase = lease->_token.frame % 8; _contextReset = lease->_reset; _claimed = false; _closed = false;
+  return self;
+}
+- (NSUInteger)phase { return _contextPhase; }
+- (BOOL)reset { return _contextReset; }
+- (id<MTLBuffer>)inputBuffer { return _inputView; }
+- (id<MTLBuffer>)outputBuffer { return _outputView; }
+- (netal::sr::FeatureLayout)inputLayout { return _inputLayoutView; }
+- (netal::sr::FeatureLayout)outputLayout { return _outputLayoutView; }
+- (id<MTL4CommandBuffer>)claimCommandBufferForInvocation:(id<NeuralStudioDLSSSRPreparedNeuralCoreInvocation>)invocation error:(NSError**)error {
+  NeuralStudioDLSSSRSession* owner = _encodingOwner;
+  std::lock_guard<std::mutex> lock(_claimMutex);
+  if (_closed || _claimed || invocation != _invocation || _lease.status != NeuralStudioDLSSSRManagedFrameEncoding) {
+    if (error) *error = [NSError errorWithDomain:NeuralStudioDLSSSRSessionErrorDomain code:67 userInfo:
+      @{NSLocalizedDescriptionKey:@"inactive/foreign/already-claimed authentic neural-core invocation"}];
+    return nil;
+  }
+  // The cached handle state alone does not reflect an earlier callback cutting this epoch.
+  // Provider callouts run outside the state lock; revalidate the authentic exact transaction.
+  if (owner == nil || ![owner neuralStudioValidateManagedEncodingLease:_lease error:error]) return nil;
+  _claimed = true; return _contextCommand;
+}
+- (BOOL)didClaimCommandBuffer { std::lock_guard<std::mutex> lock(_claimMutex); return _claimed; }
+- (void)closeEncodingContext {
+  NeuralStudioDLSSSRFrameLease* lease;
+  id invocation,command,input,output;
+  {
+    std::lock_guard<std::mutex> lock(_claimMutex); _closed = true;
+    lease = _lease; invocation = _invocation; command = _contextCommand; input = _inputView; output = _outputView;
+    _lease = nil; _invocation = nil; _contextCommand = nil; _inputView = nil; _outputView = nil;
+  }
+  (void)lease; (void)invocation; (void)command; (void)input; (void)output; // releases outside the context lock
+}
+@end
+
+// Process-wide helper ownership. Weak pointer-personality keys distinguish actual object
+// lifetimes, not reusable addresses. A previously managed/submitted CB object is never
+// reused by these helpers: Metal exposes no public recording-generation/reset authority.
+@interface NeuralStudioManagedRecordingEntry : NSObject {
+ @public netal::sr::FrameToken token; bool tombstone;
+}
+@end
+@implementation NeuralStudioManagedRecordingEntry
+@end
+
 namespace {
+std::mutex gManagedRegistryMutex, gManagedSubmissionMutex;
+NSMapTable* ManagedRecordingRegistry() {
+  static NSMapTable* registry = [NSMapTable mapTableWithKeyOptions:
+      NSPointerFunctionsWeakMemory | NSPointerFunctionsObjectPointerPersonality
+      valueOptions:NSPointerFunctionsStrongMemory];
+  return registry;
+}
+struct ManagedRetirement {
+  __strong NeuralStudioDLSSSRSession* owner = nil;
+  __strong id<MTL4CommandBuffer> command = nil;
+  __strong id<MTL4CommandQueue> queue = nil;
+  __strong id<MTLBuffer> source = nil, destination = nil;
+  __strong id<MTLResidencySet> residency = nil;
+  __strong NSMutableArray* resources = nil;
+};
+std::shared_ptr<ManagedRetirement> DetachManagedLease(NeuralStudioDLSSSRFrameLease* lease) {
+  auto reap = std::make_shared<ManagedRetirement>();
+  reap->owner = lease->_owner; reap->command = lease->_command; reap->queue = lease->_queue;
+  reap->source = lease->_markerSource; reap->destination = lease->_markerDestination;
+  reap->residency = lease->_markerResidency; reap->resources = lease->_resources;
+  lease->_owner = nil; lease->_command = nil; lease->_queue = nil;
+  lease->_markerSource = nil; lease->_markerDestination = nil;
+  lease->_markerResidency = nil; lease->_resources = nil;
+  lease->_cachedStatus.store(NeuralStudioDLSSSRManagedFrameRetired);
+  return reap; // each nil above has a strong counterpart; no final resource release under lock
+}
+void ReapManagedLease(std::shared_ptr<ManagedRetirement>& reap) {
+  if (!reap) return;
+  @try { [reap->residency removeAllAllocations]; [reap->residency commit]; }
+  @catch (...) {}
+  [reap->resources removeAllObjects]; // clear payload even if an autorelease pool still holds the container
+  reap.reset(); // must be called OUTSIDE registry/state locks; dealloc may reenter any getter
+}
+struct ManagedSubmissionRecord {
+  netal::sr::FrameLedger::Submission batch;
+  std::atomic_bool issued{false};
+};
+std::atomic<std::uint64_t> gManagedSessionIdentity{1};
+struct ManagedMarker { std::uint64_t nonce[2]; netal::sr::FrameToken token; };
+static_assert(sizeof(ManagedMarker) == 8 * sizeof(std::uint64_t));
 
 constexpr NSUInteger kInputWidth = 1280;
 constexpr NSUInteger kInputHeight = 720;
@@ -411,6 +547,7 @@ struct DescribedBuffer {
 // scripts/derive-pwin-shift-schedule.py: period 8 in the frame index since
 // reset; enc0-2 and dec0-2 stay at the template value (4,4).
 constexpr NSUInteger kPwinShiftPeriod = 8;
+static_assert(kPwinShiftPeriod == 8);
 struct PwinShift { std::uint32_t x; std::uint32_t y; };
 constexpr PwinShift kPwinShiftA[kPwinShiftPeriod] = {  // enc3, dec3
     {4, 4}, {0, 4}, {4, 4}, {0, 4}, {0, 0}, {4, 0}, {0, 0}, {4, 0}};
@@ -484,6 +621,7 @@ DispatchTiming* g_dispatch_timing = nullptr;
 // and turn the wrap into a live race, and the receipts would catch it only intermittently. Sized
 // here with headroom, and the overflow is reported rather than silently wrapped.
 constexpr NSUInteger kRingSlots = 6, kRingBuffers = 10, kRingTables = 160, kRingBytes = 4096;
+static_assert(netal::sr::FrameLedger::capacity == kRingSlots);
 
 struct SessionState {
   __strong NSString* depth_input_library_name = nil;
@@ -493,6 +631,13 @@ struct SessionState {
   __strong NSURL* bundle_url = nil;
   __strong NSString* runtime_root = nil;
   std::mutex mutex;
+  bool managed_enabled = false;
+  __strong id<MTL4CommandQueue> managed_queue = nil;
+  netal::sr::FrameLedger managed{gManagedSessionIdentity.fetch_add(1)};
+  __strong NSString* backend_status = @"native-default";
+  __strong id<NeuralStudioDLSSSRNeuralCoreBackend> qualified_backend = nil;
+  // Only an eventual trusted qualification authority may install a provider. Native views
+  // are exact active HWC spans, not the maximum/reused arena allocation.
   std::atomic_bool consumed{false};
   bool temporal_state_initialized = false;
   __strong id<MTLResidencySet> residency = nil;
@@ -873,6 +1018,7 @@ struct FrameSink {
   id<MTL4CommandBuffer> metal4_command = nil;
   bool metal4_split = false;  // one compute encoder per dispatch (queue-stage barriers)
   SessionState* state = nullptr;
+  NeuralStudioDLSSSRFrameLease* managed_lease = nil;
 };
 
 // NEURALSTUDIO_SR_METAL3_SHARED_ENCODER: 0 off (default), 1 one encoder serial, 2 one encoder
@@ -1136,6 +1282,8 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
 
 @implementation NeuralStudioDLSSSRSession {
   std::unique_ptr<SessionState> _state;
+  NSMutableDictionary<NSNumber*, NeuralStudioDLSSSRFrameLease*>* _managedLeases;
+  dispatch_queue_t _managedFeedbackQueue;
 }
 
 - (nullable instancetype)initWithDevice:(id<MTLDevice>)device
@@ -2032,8 +2180,27 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
     SetError(error, 17, @"SR session is not initialized");
     return NO;
   }
-  std::lock_guard<std::mutex> lock(_state->mutex);
+  std::unique_lock<std::mutex> lock(_state->mutex);
   id<MTLCommandBuffer> command = sink.metal3;
+  NeuralStudioDLSSSRFrameLease* managed_lease = sink.managed_lease;
+  if (_state->managed_enabled != (managed_lease != nil) ||
+      (managed_lease != nil && (_managedLeases[@(managed_lease.sequence)] != managed_lease ||
+       !_state->managed.encoding(managed_lease->_token)))) {
+    SetError(error, 60, @"managed/legacy mismatch or invalid reserved recording");
+    return NO;
+  }
+  if (managed_lease != nil) {
+    NSUInteger tables = 1 + OutputRepeat() + 1;
+    for (const Stage& stage : _state->pwin_stages) {
+      const NSUInteger phase = managed_lease->_token.frame % kPwinShiftPeriod;
+      tables += stage.pipeline_dispatches_by_phase.empty() || stage.pipeline_dispatches_by_phase[phase].empty()
+          ? 1 : stage.pipeline_dispatches_by_phase[phase].size();
+    }
+    if (tables > kRingTables) { SetError(error, 60, @"managed argument table capacity exceeded"); return NO; }
+  }
+  // Encoding admission is the CPU transaction gate: another reserve/begin cannot replace
+  // mutable session encoder state. No external provider callout runs under this state lock.
+  if (managed_lease != nil) lock.unlock();
   // Claim this frame's ring slot: wait until the frame kRingSlots back has finished with it, so the
   // memcpy below cannot land under a command buffer that is still reading those arguments. Under
   // normal pacing at most one or two frames are in flight and this never blocks.
@@ -2067,7 +2234,9 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
   }
   // Per-frame ring slot (descriptors, argument buffers, Metal 4 argument tables)
   // before the first FrameDescriptor/FrameScratch of this frame.
-  _state->ring_slot = static_cast<NSUInteger>(_state->frames_started++ % kRingSlots);
+  _state->ring_slot = managed_lease != nil ? managed_lease->_token.slot
+      : static_cast<NSUInteger>(_state->frames_started % kRingSlots);
+  ++_state->frames_started;
   _state->ring_next = 0;
   _state->table_next = 0;
   if ((command == nil && sink.metal4 == nil) || (command != nil && command.device != _state->device) ||
@@ -2126,11 +2295,13 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
     return NO;
   }
 
-  if (!reset && !_state->temporal_state_initialized) {
+  if (managed_lease == nil && !reset && !_state->temporal_state_initialized) {
     SetError(error, 26, @"temporal frame requires an accepted reset frame");
     return NO;
   }
   if (reset) {
+    // Managed reservation admits reset only with no outstanding ownership. It never treats
+    // an elapsed timeout, ambiguous commit or error feedback as drain.
     // These fills are the same kind of CPU write as the one removed below, and they are not
     // optional - they initialise the temporal state. So drain first: take the remaining ring
     // tokens, which are only returned once a frame's command buffer completes, and the arenas
@@ -2183,7 +2354,8 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
     return NO;
   }
 
-  const std::uint64_t frame_index = reset ? 0 : _state->encoded_frame_count;
+  const std::uint64_t frame_index = managed_lease != nil ? managed_lease->_token.frame
+      : reset ? 0 : _state->encoded_frame_count;
   const bool even_frame = (frame_index & 1u) == 0;
   DescribedBuffer& prior_color_history =
       even_frame ? _state->internal3 : _state->internal4;
@@ -2307,6 +2479,17 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
       color_descriptor, motion_descriptor, depth_descriptor, exposure_descriptor,
       output_descriptor, input_descriptor, hiluma_output_descriptor,
       exposure_copy_descriptor, color, motion, depth, exposure, output};
+  if (managed_lease != nil) {
+    // FrameScratch may allocate outside its ring for a larger ABI descriptor: pin and make
+    // every actual backing resident before the first dispatch, including partial failures.
+    for (id<MTLBuffer> buffer : _state->retained_frame_buffers) {
+      [managed_lease->_resources addObject:buffer];
+      [managed_lease->_markerResidency addAllocation:buffer];
+    }
+    [managed_lease->_markerResidency commit];
+    [sink.metal4_command useResidencySet:managed_lease->_markerResidency];
+    _state->retained_frame_buffers.clear(); // lease owns the actual frame; no last-frame retention after retirement
+  }
 
   id<MTLComputePipelineState> input_pipeline = depth_reversed
       ? _state->depth_inverted_input_pipeline
@@ -2334,6 +2517,48 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
   if (_state->temporal_scalar_debug != nil) {
     input_extras.push_back({_state->temporal_scalar_debug, 13});
   }
+  id<NeuralStudioDLSSSRPreparedNeuralCoreInvocation> prepared_core = nil;
+  NeuralStudioDLSSSRNeuralCoreEncodingContext* core_context = nil;
+  if (_state->qualified_backend != nil) {
+    std::uint32_t width = 0, height = 0, input_width = 0;
+    std::memcpy(&width, static_cast<const std::uint8_t*>(_state->output_template.bytes)+80, 4);
+    std::memcpy(&height, static_cast<const std::uint8_t*>(_state->output_template.bytes)+84, 4);
+    std::memcpy(&input_width, static_cast<const std::uint8_t*>(_state->input_template.bytes)+64, 4);
+    netal::sr::NativeFeatureLayouts views;
+    bool boundary = width == input_width && netal::sr::NativeHWCFeatureLayouts(width,height,kCanary,
+        _state->arena6.buffer.length,frame_index % kPwinShiftPeriod,views);
+    for (const Stage* edge : {&_state->pwin_stages.front(), &_state->pwin_stages.back()}) {
+      std::uint32_t extent[2]{}; std::memcpy(extent,edge->argument_template.bytes,8);
+      boundary = boundary && extent[0]==width && extent[1]==height;
+    }
+    if (managed_lease == nil || !boundary || views.input.spanBytes()>_state->arena6.bytes ||
+        views.output.spanBytes()>_state->arena6.bytes) {
+      SetError(error,67,@"native feature ABI/span unavailable; abandon recording"); return NO;
+    }
+    @try {
+      prepared_core = [_state->qualified_backend prepareNeuralCoreForCommandBuffer:sink.metal4_command
+          inputBuffer:_state->arena6.buffer inputLayout:views.input outputBuffer:_state->arena6.buffer
+          outputLayout:views.output phase:frame_index % kPwinShiftPeriod reset:reset error:error];
+      NSArray* all_resources = [prepared_core.retainedResources copy];
+      if (prepared_core == nil || all_resources == nil) {
+        SetError(error,67,@"neural-core preparation unavailable; no candidate GPU emission permitted"); return NO;
+      }
+      [managed_lease->_resources addObject:prepared_core];
+      [managed_lease->_resources addObjectsFromArray:all_resources];
+      for (id resource in all_resources) if ([resource conformsToProtocol:@protocol(MTLAllocation)])
+        [managed_lease->_markerResidency addAllocation:resource];
+      [managed_lease->_markerResidency commit];
+      [sink.metal4_command useResidencySet:managed_lease->_markerResidency];
+      core_context = [[NeuralStudioDLSSSRNeuralCoreEncodingContext alloc] initWithLease:managed_lease
+          invocation:prepared_core input:_state->arena6.buffer output:_state->arena6.buffer
+          inputLayout:views.input outputLayout:views.output];
+    } @catch (...) {
+      SetError(error,67,@"neural-core preparation exception before GPU emission"); return NO;
+    }
+  }
+  // Preparation/getters may reenter or allow an older callback to cut the epoch. Reject a
+  // deterministic cut before new Hiluma/provider recording; do not hold a lock across emission.
+  if (managed_lease != nil && ![self neuralStudioValidateManagedEncodingLease:managed_lease error:error]) return NO;
   _state->dispatch_timing.next_index = 0;
   g_dispatch_timing = &_state->dispatch_timing;
   Encode(sink, input_pipeline, input_descriptor,
@@ -2372,6 +2597,19 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
                          _state->arena8_stage_snapshots[0]);
   }
 
+  if (prepared_core != nil) {
+    if (![self neuralStudioValidateManagedEncodingLease:managed_lease error:error]) { g_dispatch_timing = nullptr; return NO; }
+    [sink.metal4 endEncoding]; sink.metal4 = nil;
+    BOOL candidate_encoded = NO;
+    @try { candidate_encoded = [prepared_core encodeNeuralCoreWithContext:core_context error:error] && [core_context didClaimCommandBuffer]; }
+    @finally { [core_context closeEncodingContext]; }
+    if (!candidate_encoded || ![self neuralStudioValidateManagedEncodingLease:managed_lease error:error]) {
+      g_dispatch_timing = nullptr; return NO;
+    }
+    sink.metal4 = [sink.metal4_command computeCommandEncoder];
+    if (sink.metal4 == nil) { g_dispatch_timing = nullptr; SetError(error,67,@"neural-core consumer encoder unavailable"); return NO; }
+    [sink.metal4 barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+  } else {
   NSUInteger pwin_index = 0;
   for (const Stage& stage : _state->pwin_stages) {
     std::vector<std::pair<id<MTLBuffer>, NSUInteger>> extras;
@@ -2427,6 +2665,8 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
                            _state->arena8_stage_snapshots[pwin_index + 1]);
     }
     ++pwin_index;
+  }
+
   }
 
   std::vector<std::pair<id<MTLBuffer>, NSUInteger>> output_extras = {
@@ -2519,6 +2759,13 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
       dispatch_semaphore_signal(ring_owner->ring_slots);
     }
   }];
+  if (managed_lease != nil) {
+    lock.lock();
+    if (_state->managed.encoded(managed_lease->_token) != netal::sr::FrameResult::Accepted) {
+      SetError(error, 60, @"managed scheduled epoch invalidated during encoding"); return NO;
+    }
+    managed_lease->_cachedStatus.store(NeuralStudioDLSSSRManagedFrameCoreEncoded);
+  }
   _state->temporal_state_initialized = true;
   _state->encoded_frame_count = frame_index + 1;
   _state->previous_jitter_x = jitter_x;
@@ -2584,6 +2831,9 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
                                   reset:(BOOL)reset
                           depthReversed:(BOOL)depth_reversed
                                   error:(NSError**)error {
+  if (self.managedMTL4FramesEnabled) {
+    SetError(error, 60, @"legacy Metal4 selector unavailable in managed mode"); return NO;
+  }
   if (_state == nullptr || _state->residency == nil || command == nil) {
     SetError(error, 33, @"Metal 4 encode unavailable (no residency set or command buffer)");
     return NO;
@@ -2610,6 +2860,374 @@ BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitter_x, float jitter_y) {
                                    depthReversed:depth_reversed error:error];
   [sink.metal4 endEncoding];
   return encoded;
+}
+- (BOOL)neuralStudioEncodeManagedFrameWithLease:(NeuralStudioDLSSSRFrameLease*)lease
+                        colorBuffer:(id<MTLBuffer>)colorBuffer
+                        colorOffset:(NSUInteger)colorOffset
+                       motionBuffer:(id<MTLBuffer>)motionBuffer
+                       motionOffset:(NSUInteger)motionOffset
+                        depthBuffer:(id<MTLBuffer>)depthBuffer
+                        depthOffset:(NSUInteger)depthOffset
+                     exposureBuffer:(id<MTLBuffer>)exposureBuffer
+                     exposureOffset:(NSUInteger)exposureOffset
+                       outputBuffer:(id<MTLBuffer>)outputBuffer
+                       outputOffset:(NSUInteger)outputOffset
+                      jitterOffsetX:(float)jitterOffsetX
+                      jitterOffsetY:(float)jitterOffsetY
+                 motionVectorScaleX:(float)motionVectorScaleX
+                 motionVectorScaleY:(float)motionVectorScaleY
+                      depthReversed:(BOOL)depthReversed
+                              error:(NSError**)error {
+  if (_state == nullptr || lease == nil) { SetError(error,60,@"managed lease unavailable"); return NO; }
+  {
+    std::lock_guard<std::mutex> lock(_state->mutex);
+    if (_managedLeases[@(lease.sequence)] != lease || !_state->managed.encoding(lease->_token)) {
+      SetError(error,60,@"managed encode requires the authentic active Encoding lease"); return NO;
+    }
+  }
+  if (colorBuffer == nil || motionBuffer == nil || depthBuffer == nil || exposureBuffer == nil || outputBuffer == nil) {
+    [self neuralStudioFailManagedLease:lease]; SetError(error, 60, @"managed frame buffers missing"); return NO;
+  }
+  for (id<MTLBuffer> buffer in @[colorBuffer, motionBuffer, depthBuffer, exposureBuffer, outputBuffer]) {
+    if (buffer.device != _state->device) {
+      [self neuralStudioFailManagedLease:lease]; SetError(error, 60, @"managed frame buffer belongs to another device"); return NO;
+    }
+  }
+  if (![self neuralStudioRetainManagedResources:@[colorBuffer, motionBuffer, depthBuffer, exposureBuffer, outputBuffer]
+                                         lease:lease error:error]) {
+    [self neuralStudioFailManagedLease:lease]; return NO;
+  }
+  FrameSink sink; sink.state = _state.get(); sink.metal4_command = lease->_command; sink.managed_lease = lease;
+  BOOL encoded = NO;
+  @try {
+    [lease->_command useResidencySet:_state->residency];
+    sink.metal4 = [lease->_command computeCommandEncoder];
+    if (sink.metal4 != nil) {
+      [sink.metal4 barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageDispatch visibilityOptions:MTL4VisibilityOptionDevice];
+      encoded = [self encodeFrameWithSink:sink colorBuffer:colorBuffer colorOffset:colorOffset
+      motionBuffer:motionBuffer motionOffset:motionOffset depthBuffer:depthBuffer depthOffset:depthOffset
+      exposureBuffer:exposureBuffer exposureOffset:exposureOffset outputBuffer:outputBuffer outputOffset:outputOffset
+      jitterOffsetX:jitterOffsetX jitterOffsetY:jitterOffsetY motionVectorScaleX:motionVectorScaleX
+      motionVectorScaleY:motionVectorScaleY reset:lease->_reset depthReversed:depthReversed error:error];
+    } else SetError(error, 60, @"managed compute encoder unavailable");
+  } @catch (...) {
+    SetError(error, 60, @"managed encoding exception; abandon recording");
+  } @finally {
+    @try { if (sink.metal4 != nil) [sink.metal4 endEncoding]; }
+    @catch (...) {
+      encoded = NO; SetError(error, 60, @"managed encoder finalization failed; abandon recording");
+    }
+    g_dispatch_timing = nullptr;
+  }
+  if (!encoded) [self neuralStudioFailManagedLease:lease];
+  return encoded;
+}
+- (BOOL)encodeManagedFrameWithLease:(NeuralStudioDLSSSRFrameLease*)lease
+                        colorBuffer:(id<MTLBuffer>)colorBuffer
+                        colorOffset:(NSUInteger)colorOffset
+                       motionBuffer:(id<MTLBuffer>)motionBuffer
+                       motionOffset:(NSUInteger)motionOffset
+                        depthBuffer:(id<MTLBuffer>)depthBuffer
+                        depthOffset:(NSUInteger)depthOffset
+                     exposureBuffer:(id<MTLBuffer>)exposureBuffer
+                     exposureOffset:(NSUInteger)exposureOffset
+                       outputBuffer:(id<MTLBuffer>)outputBuffer
+                       outputOffset:(NSUInteger)outputOffset
+                      jitterOffsetX:(float)jitterOffsetX
+                      jitterOffsetY:(float)jitterOffsetY
+                 motionVectorScaleX:(float)motionVectorScaleX
+                 motionVectorScaleY:(float)motionVectorScaleY
+                      depthReversed:(BOOL)depthReversed
+                              error:(NSError**)error {
+  if (![self neuralStudioBeginManagedLease:lease error:error]) return NO;
+  @try {
+  if (![self neuralStudioEncodeManagedFrameWithLease:lease colorBuffer:colorBuffer colorOffset:colorOffset
+      motionBuffer:motionBuffer motionOffset:motionOffset depthBuffer:depthBuffer depthOffset:depthOffset
+      exposureBuffer:exposureBuffer exposureOffset:exposureOffset outputBuffer:outputBuffer outputOffset:outputOffset
+      jitterOffsetX:jitterOffsetX jitterOffsetY:jitterOffsetY motionVectorScaleX:motionVectorScaleX
+      motionVectorScaleY:motionVectorScaleY depthReversed:depthReversed error:error]) { [self neuralStudioFailManagedLease:lease]; return NO; }
+  if ([self neuralStudioFinishManagedFrameLease:lease error:error]) return YES;
+  } @catch (...) { SetError(error,60,@"managed resource/encoding exception; abandon recording"); }
+  [self neuralStudioFailManagedLease:lease]; return NO;
+}
+
+
+- (BOOL)enableManagedMTL4FramesWithError:(NSError**)error {
+  if (_state == nullptr) { SetError(error,60,@"SR session unavailable"); return NO; }
+  std::lock_guard<std::mutex> lock(_state->mutex);
+  if (_state->managed_enabled) return YES;
+  if (_state->frames_started || _state->residency == nil || _state->consumed.load()) {
+    SetError(error,60,@"managed mode requires an unused Metal4 session"); return NO;
+  }
+  _managedLeases = [NSMutableDictionary dictionary];
+  _managedFeedbackQueue = dispatch_queue_create("netal.managed-frame-observers",DISPATCH_QUEUE_SERIAL);
+  _state->managed_enabled = true; return YES;
+}
+- (BOOL)managedMTL4FramesEnabled {
+  if (_state == nullptr) return NO;
+  std::lock_guard<std::mutex> lock(_state->mutex); return _state->managed_enabled;
+}
+- (NeuralStudioDLSSSRFrameLease*)newManagedFrameLeaseForCommandBuffer:(id<MTL4CommandBuffer>)command
+    allocator:(id<MTL4CommandAllocator>)allocator queue:(id<MTL4CommandQueue>)queue reset:(BOOL)reset error:(NSError**)error {
+  if (_state == nullptr || command == nil || queue == nil || allocator == nil ||
+      command.device != _state->device || queue.device != _state->device || allocator.device != _state->device) {
+    SetError(error,60,@"managed command/queue/allocator device mismatch"); return nil;
+  }
+  NeuralStudioDLSSSRFrameLease* lease = [[NeuralStudioDLSSSRFrameLease alloc] initPrivate];
+  lease->_resources = [NSMutableArray arrayWithObject:allocator];
+  ManagedMarker marker{}; arc4random_buf(marker.nonce,sizeof(marker.nonce));
+  @try {
+    lease->_markerSource = [_state->device newBufferWithLength:sizeof(marker) options:MTLResourceStorageModeShared];
+    lease->_markerDestination = [_state->device newBufferWithLength:sizeof(marker) options:MTLResourceStorageModeShared];
+    MTLResidencySetDescriptor* descriptor = [[MTLResidencySetDescriptor alloc] init]; descriptor.initialCapacity = 2;
+    lease->_markerResidency = [_state->device newResidencySetWithDescriptor:descriptor error:error];
+    if (lease->_markerSource == nil || lease->_markerDestination == nil || lease->_markerResidency == nil) {
+      SetError(error,61,@"managed marker preparation failed before reservation"); return nil;
+    }
+    [lease->_markerResidency addAllocation:lease->_markerSource];
+    [lease->_markerResidency addAllocation:lease->_markerDestination]; [lease->_markerResidency commit];
+  } @catch (...) {
+    SetError(error,61,@"managed marker preparation exception before reservation"); return nil;
+  }
+  __strong id<MTL4CommandQueue> previous_queue = nil;
+  {
+    std::lock_guard<std::mutex> registry_lock(gManagedRegistryMutex);
+    std::lock_guard<std::mutex> lock(_state->mutex);
+    if (!_state->managed_enabled || [ManagedRecordingRegistry() objectForKey:command] != nil) {
+      SetError(error,62,@"managed mode unavailable or command object already active/retired/tainted; use a fresh CB"); return nil;
+    }
+    if (_state->managed.reserve(reinterpret_cast<std::uintptr_t>((__bridge void*)command),
+        reinterpret_cast<std::uintptr_t>((__bridge void*)queue),reset,lease->_token) != netal::sr::FrameResult::Accepted) {
+      SetError(error,62,@"managed admission rejected before staging mutation"); return nil;
+    }
+    lease->_owner = self; lease->_command = command; lease->_queue = queue; lease->_reset = reset;
+    previous_queue = _state->managed_queue; _state->managed_queue = queue;
+    NeuralStudioManagedRecordingEntry* entry = [[NeuralStudioManagedRecordingEntry alloc] init];
+    entry->token = lease->_token; entry->tombstone = false;
+    [ManagedRecordingRegistry() setObject:entry forKey:command];
+    _managedLeases[@(lease.sequence)] = lease;
+  }
+  (void)previous_queue; previous_queue = nil; // replacement queue's last release is outside all locks
+  marker.token = lease->_token;
+  std::memcpy(lease->_markerSource.contents,&marker,sizeof(marker));
+  std::memset(lease->_markerDestination.contents,0,sizeof(marker));
+  return lease;
+}
+- (BOOL)neuralStudioValidateManagedEncodingLease:(NeuralStudioDLSSSRFrameLease*)lease error:(NSError**)error {
+  if (_state == nullptr || lease == nil) { SetError(error,60,@"managed encoding transaction missing"); return NO; }
+  std::lock_guard<std::mutex> lock(_state->mutex);
+  if (_managedLeases[@(lease.sequence)] != lease || !_state->managed.encoding(lease->_token)) {
+    SetError(error,60,@"managed encoding transaction was cut, superseded or left Encoding state"); return NO;
+  }
+  return YES; // exact session/epoch/sequence/slot generation, active Encoding and no content cut
+}
+- (BOOL)neuralStudioBeginManagedLease:(NeuralStudioDLSSSRFrameLease*)lease error:(NSError**)error {
+  if (_state == nullptr || lease == nil) { SetError(error,60,@"managed lease missing"); return NO; }
+  std::lock_guard<std::mutex> lock(_state->mutex);
+  if (_managedLeases[@(lease.sequence)] != lease || _state->managed.beginEncoding(lease->_token) != netal::sr::FrameResult::Accepted) {
+    SetError(error,60,@"stale, wrong-state or cut lease cannot begin encoding"); return NO;
+  }
+  lease->_cachedStatus.store(NeuralStudioDLSSSRManagedFrameEncoding); return YES;
+}
+- (NSUInteger)neuralStudioManagedSlotForLease:(NeuralStudioDLSSSRFrameLease*)lease {
+  if (_state == nullptr || lease == nil) return NSNotFound;
+  std::lock_guard<std::mutex> lock(_state->mutex);
+  return _managedLeases[@(lease.sequence)] == lease && _state->managed.encoding(lease->_token) ? lease->_token.slot : NSNotFound;
+}
+- (BOOL)neuralStudioRetainManagedResources:(NSArray*)resources lease:(NeuralStudioDLSSSRFrameLease*)lease error:(NSError**)error {
+  if (_state == nullptr || lease == nil) { SetError(error,60,@"managed lease missing"); return NO; }
+  NSArray* snapshot = [resources copy];
+  for (id resource in snapshot) if ([resource conformsToProtocol:@protocol(MTLResource)] &&
+      [(id<MTLResource>)resource device] != _state->device) {
+    SetError(error,60,@"managed resource belongs to another device"); return NO;
+  }
+  {
+    std::lock_guard<std::mutex> lock(_state->mutex);
+    if (_managedLeases[@(lease.sequence)] != lease || !_state->managed.encoding(lease->_token)) {
+      SetError(error,60,@"resource attachment requires an authentic Encoding lease"); return NO;
+    }
+    [lease->_resources addObjectsFromArray:snapshot]; // retain only; never reap under the lock
+  }
+  for (id resource in snapshot) if ([resource conformsToProtocol:@protocol(MTLAllocation)])
+    [lease->_markerResidency addAllocation:resource];
+  [lease->_markerResidency commit]; [lease->_command useResidencySet:lease->_markerResidency];
+  return YES;
+}
+- (void)neuralStudioFailManagedLease:(NeuralStudioDLSSSRFrameLease*)lease {
+  if (_state == nullptr || lease == nil) return;
+  std::lock_guard<std::mutex> lock(_state->mutex);
+  if (_managedLeases[@(lease.sequence)] == lease &&
+      _state->managed.failEncoding(lease->_token) == netal::sr::FrameResult::Accepted) {
+    lease->_cachedStatus.store(NeuralStudioDLSSSRManagedFrameFailedUnsubmitted);
+    _state->temporal_state_initialized = false;
+  } // rejected stale/wrong-state calls must not cut an unrelated healthy epoch
+}
+- (BOOL)neuralStudioFinishManagedFrameLease:(NeuralStudioDLSSSRFrameLease*)lease error:(NSError**)error {
+  if (_state == nullptr || lease == nil) { SetError(error,60,@"managed lease missing"); return NO; }
+  {
+    std::lock_guard<std::mutex> lock(_state->mutex);
+    if (_managedLeases[@(lease.sequence)] != lease || lease->_finalized || _state->managed.needsReset() ||
+        _state->managed.ownership(lease->_token) != netal::sr::FrameOwnership::CoreEncoded) {
+      SetError(error,60,@"marker requires authentic successful current core encoding"); return NO;
+    }
+  }
+  @try {
+    [lease->_command useResidencySet:lease->_markerResidency];
+    id<MTL4ComputeCommandEncoder> encoder = [lease->_command computeCommandEncoder];
+    if (encoder == nil) { [self neuralStudioFailManagedLease:lease]; SetError(error,63,@"marker encoder unavailable; abandon recording"); return NO; }
+    [encoder barrierAfterQueueStages:MTLStageAll beforeStages:MTLStageBlit visibilityOptions:MTL4VisibilityOptionDevice];
+    [encoder copyFromBuffer:lease->_markerSource sourceOffset:0 toBuffer:lease->_markerDestination destinationOffset:0 size:sizeof(ManagedMarker)];
+    [encoder endEncoding];
+    std::lock_guard<std::mutex> lock(_state->mutex);
+    if (_state->managed.finalize(lease->_token) != netal::sr::FrameResult::Accepted) {
+      SetError(error,63,@"content cut before finalization; abandon recording"); return NO;
+    }
+    lease->_finalized = true; lease->_cachedStatus.store(NeuralStudioDLSSSRManagedFrameEncoded); return YES;
+  } @catch (...) {
+    [self neuralStudioFailManagedLease:lease];
+    SetError(error,63,@"marker exception; abandon unsubmitted recording"); return NO;
+  }
+}
+- (BOOL)discardUnsubmittedManagedFrameLease:(NeuralStudioDLSSSRFrameLease*)lease error:(NSError**)error {
+  if (_state == nullptr || lease == nil) { SetError(error,60,@"managed lease missing"); return NO; }
+  std::shared_ptr<ManagedRetirement> reap;
+  {
+    std::lock_guard<std::mutex> registry_lock(gManagedRegistryMutex);
+    std::lock_guard<std::mutex> lock(_state->mutex);
+    if (_managedLeases[@(lease.sequence)] != lease || _state->managed.discard(lease->_token) != netal::sr::FrameResult::Accepted) {
+      SetError(error,64,@"active encoding, submitted, unknown, quarantined or stale work cannot be discarded"); return NO;
+    }
+    NeuralStudioManagedRecordingEntry* entry = [ManagedRecordingRegistry() objectForKey:lease->_command];
+    if (entry != nil) entry->tombstone = true;
+    _state->temporal_state_initialized = false;
+    reap = DetachManagedLease(lease); [_managedLeases removeObjectForKey:@(lease.sequence)];
+  }
+  ReapManagedLease(reap); return YES;
+}
+- (BOOL)commitManagedCommandBuffers:(NSArray<id<MTL4CommandBuffer>>*)commands queue:(id<MTL4CommandQueue>)queue
+    leases:(NSArray<NeuralStudioDLSSSRFrameLease*>*)leases feedback:(MTL4CommitFeedbackHandler)feedback error:(NSError**)error {
+  if (_state == nullptr || !commands.count || !leases.count || queue == nil) { SetError(error,65,@"nonempty exact managed batch required"); return NO; }
+  NSArray* actual_commands = [commands copy]; NSArray* actual_leases = [leases copy];
+  auto record = std::make_shared<ManagedSubmissionRecord>();
+  MTL4CommitOptions* options = nil;
+  __weak NeuralStudioDLSSSRSession* weak_owner = self;
+  // Known setup failures leave every lease Encoded and explicitly discardable. The captured
+  // record becomes immutable and published with release/acquire ordering before commit only.
+  @try {
+    options = [[MTL4CommitOptions alloc] init];
+    if (options == nil) { SetError(error,66,@"commit options unavailable before submission"); return NO; }
+    [options addFeedbackHandler:^(id<MTL4CommitFeedback> result) {
+      if (!record->issued.load(std::memory_order_acquire)) return;
+      NeuralStudioDLSSSRSession* owner = weak_owner;
+      if (owner == nil) return; // active/unknown leases pin owner; terminal callbacks need no session
+      auto reaps = std::make_shared<std::vector<std::shared_ptr<ManagedRetirement>>>();
+      reaps->reserve(actual_leases.count);
+      {
+        std::lock_guard<std::mutex> registry_lock(gManagedRegistryMutex);
+        std::lock_guard<std::mutex> lock(owner->_state->mutex);
+        bool associated = true;
+        for (NeuralStudioDLSSSRFrameLease* lease in actual_leases) {
+          const auto state = owner->_state->managed.ownership(lease->_token);
+          if (owner->_managedLeases[@(lease.sequence)] != lease ||
+              (state != netal::sr::FrameOwnership::SubmitIssued && state != netal::sr::FrameOwnership::SubmitUnknown)) associated = false;
+        }
+        if (associated) {
+          std::vector<bool> markers;
+          for (NeuralStudioDLSSSRFrameLease* lease in actual_leases) markers.push_back(result.error == nil &&
+              lease->_markerSource != nil && lease->_markerDestination != nil &&
+              std::memcmp(lease->_markerSource.contents,lease->_markerDestination.contents,sizeof(ManagedMarker)) == 0);
+          if (owner->_state->managed.feedback(record->batch,result.error == nil,markers) == netal::sr::FrameResult::Accepted) {
+            for (NeuralStudioDLSSSRFrameLease* lease in actual_leases) {
+              if (owner->_state->managed.ownership(lease->_token) == netal::sr::FrameOwnership::Free) {
+                NeuralStudioManagedRecordingEntry* entry = [ManagedRecordingRegistry() objectForKey:lease->_command];
+                if (entry != nil) entry->tombstone = true;
+                reaps->push_back(DetachManagedLease(lease)); [owner->_managedLeases removeObjectForKey:@(lease.sequence)];
+              } else lease->_cachedStatus.store(NeuralStudioDLSSSRManagedFrameQuarantined);
+            }
+          }
+          if (owner->_state->managed.needsReset()) owner->_state->temporal_state_initialized = false;
+        } // duplicate/stale feedback is inert, including after a new healthy reset generation
+      }
+      (void)actual_commands;
+      dispatch_async(owner->_managedFeedbackQueue,^{
+        for (auto& reap : *reaps) ReapManagedLease(reap);
+        if (feedback != nil) feedback(result);
+      }); // cleanup/dealloc may reenter commit; never run it on an inline feedback stack
+
+    }];
+  } @catch (...) {
+    SetError(error,66,@"feedback preparation failed before commit invocation; work remains unsubmitted"); return NO;
+  }
+  // Across sessions, protect registry validation through the actual API invocation. Callback
+  // takes neither this mutex nor an encoder lock held while invoking Metal.
+  std::lock_guard<std::mutex> submission_lock(gManagedSubmissionMutex);
+  std::vector<id<MTL4CommandBuffer>> buffers; std::vector<netal::sr::FrameToken> tokens;
+  {
+    std::lock_guard<std::mutex> registry_lock(gManagedRegistryMutex);
+    std::lock_guard<std::mutex> lock(_state->mutex);
+    if (!_state->managed_enabled || queue != _state->managed_queue) { SetError(error,65,@"bound managed queue mismatch"); return NO; }
+    for (NSUInteger i = 0; i < actual_commands.count; ++i) {
+      id<MTL4CommandBuffer> command = actual_commands[i];
+      if (command.device != _state->device || [actual_commands indexOfObjectIdenticalTo:command] != i) {
+        SetError(error,65,@"foreign or duplicate command object"); return NO;
+      }
+      NeuralStudioManagedRecordingEntry* entry = [ManagedRecordingRegistry() objectForKey:command];
+      if (entry != nil) {
+        NeuralStudioDLSSSRFrameLease* exact = nil;
+        for (NeuralStudioDLSSSRFrameLease* lease in actual_leases) if (lease->_token == entry->token) exact = lease;
+        if (entry->tombstone || exact == nil || _managedLeases[@(exact.sequence)] != exact || exact->_command != command) {
+          SetError(error,65,@"active foreign or retired/tainted recording cannot be submitted as host work"); return NO;
+        }
+      }
+      buffers.push_back(command);
+    }
+    NSUInteger previous = NSNotFound;
+    for (NeuralStudioDLSSSRFrameLease* lease in actual_leases) {
+      if (_managedLeases[@(lease.sequence)] != lease || lease->_queue != queue || !lease->_finalized) {
+        SetError(error,65,@"stale or unfinalized managed lease"); return NO;
+      }
+      const NSUInteger index = [actual_commands indexOfObjectIdenticalTo:lease->_command];
+      if (index == NSNotFound || (previous != NSNotFound && index <= previous)) {
+        SetError(error,65,@"managed recording association/order mismatch"); return NO;
+      }
+      previous = index; tokens.push_back(lease->_token);
+    }
+    for (id<MTL4CommandBuffer> command in actual_commands) if ([ManagedRecordingRegistry() objectForKey:command] == nil) {
+      NeuralStudioManagedRecordingEntry* entry = [[NeuralStudioManagedRecordingEntry alloc] init]; entry->tombstone = true;
+      [ManagedRecordingRegistry() setObject:entry forKey:command]; // host CBs also become one-use helper recordings
+    }
+    if (_state->managed.issue(tokens,reinterpret_cast<std::uintptr_t>((__bridge void*)queue),record->batch) != netal::sr::FrameResult::Accepted) {
+      SetError(error,65,@"managed batch is cut, repeated or skips an unsubmitted dependency"); return NO;
+    }
+    for (NeuralStudioDLSSSRFrameLease* lease in actual_leases) lease->_cachedStatus.store(NeuralStudioDLSSSRManagedFrameSubmitIssued);
+    record->issued.store(true,std::memory_order_release);
+  }
+  @try {
+    [queue commit:buffers.data() count:buffers.size() options:options]; return YES;
+  } @catch (...) {
+    std::lock_guard<std::mutex> lock(_state->mutex); _state->managed.ambiguous(record->batch);
+    for (NeuralStudioDLSSSRFrameLease* lease in actual_leases)
+      if (_state->managed.ownership(lease->_token) == netal::sr::FrameOwnership::SubmitUnknown)
+        lease->_cachedStatus.store(NeuralStudioDLSSSRManagedFrameSubmitUnknown);
+    if (_state->managed.needsReset()) _state->temporal_state_initialized = false;
+    SetError(error,66,@"actual commit invocation outcome unknown; retain ownership; exact late completion may retire it"); return NO;
+  }
+}
+- (void)invalidateManagedTemporalChain {
+  if (_state == nullptr) return;
+  std::lock_guard<std::mutex> lock(_state->mutex);
+  if (_state->managed_enabled) { _state->managed.cut(); _state->temporal_state_initialized = false; }
+}
+- (BOOL)configureOptionalNeuralCoreBackend:(id<NeuralStudioDLSSSRNeuralCoreBackend>)backend error:(NSError**)error {
+  (void)backend;
+  if (_state == nullptr) { SetError(error,67,@"SR session unavailable"); return NO; }
+  std::lock_guard<std::mutex> lock(_state->mutex);
+  _state->backend_status = @"native-default: external full-core qualification unavailable";
+  SetError(error,67,@"trusted full-core layout/eight-phase numeric/temporal qualification unavailable; native remains selected"); return NO;
+}
+- (NSString*)neuralCoreBackendStatus {
+  if (_state == nullptr) return @"unavailable";
+  std::lock_guard<std::mutex> lock(_state->mutex); return _state->backend_status;
 }
 
 @end

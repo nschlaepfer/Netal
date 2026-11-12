@@ -7,6 +7,31 @@ FOUNDATION_EXPORT NSErrorDomain const NeuralStudioDLSSSRSessionErrorDomain;
 FOUNDATION_EXPORT BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitterOffsetX,
                                                             float jitterOffsetY);
 
+@protocol NeuralStudioDLSSSRNeuralCoreBackend;
+@class NeuralStudioDLSSSRSession;
+
+/// Opaque ownership of one managed recording. Encode success is provisional, never GPU proof.
+/// Retained (including its session/resources) until exact verified feedback or explicit pre-submit discard.
+typedef NS_ENUM(NSUInteger, NeuralStudioDLSSSRManagedFrameStatus) {
+  NeuralStudioDLSSSRManagedFrameReserved,
+  NeuralStudioDLSSSRManagedFrameEncoding,
+  NeuralStudioDLSSSRManagedFrameCoreEncoded,
+  NeuralStudioDLSSSRManagedFrameEncoded,
+  NeuralStudioDLSSSRManagedFrameFailedUnsubmitted,
+  NeuralStudioDLSSSRManagedFrameSubmitIssued,
+  NeuralStudioDLSSSRManagedFrameSubmitUnknown,
+  NeuralStudioDLSSSRManagedFrameQuarantined,
+  NeuralStudioDLSSSRManagedFrameRetired,
+};
+@interface NeuralStudioDLSSSRFrameLease : NSObject
+@property(nonatomic, readonly) uint64_t sequence;
+@property(nonatomic, readonly) uint64_t scheduledFrameIndex;
+/// Safe ownership retirement; raw Metal feedback (including nil error) alone is insufficient.
+@property(atomic, readonly, getter=isRetired) BOOL retired;
+@property(atomic, readonly) NeuralStudioDLSSSRManagedFrameStatus status;
+- (instancetype)init NS_UNAVAILABLE;
+@end
+
 @interface NeuralStudioDLSSSRSession : NSObject
 
 @property(nonatomic, readonly) NSUInteger inputWidth;
@@ -104,6 +129,56 @@ FOUNDATION_EXPORT BOOL NeuralStudioDLSSSRIsProvenLiveJitter(float jitterOffsetX,
                               reset:(BOOL)reset
                       depthReversed:(BOOL)depthReversed
                               error:(NSError**)error;
+
+/// Opt-in only, before any frame; legacy callers stay untracked. Mixing APIs is rejected.
+@property(nonatomic, readonly) BOOL managedMTL4FramesEnabled;
+- (BOOL)enableManagedMTL4FramesWithError:(NSError**)error;
+/// Lease pins the supplied allocator; caller must supply the allocator backing this recording
+/// and must not reset it until every associated lease reports isRetired. This API
+/// owns submission. Every CB object entering managed helpers is one-use across the process;
+/// retired/discarded/tainted objects cannot be recycled, even as host CBs. Use a fresh CB object.
+/// Direct raw commit/re-recording violates ownership. A private GPU marker checks
+/// recording identity on nil-error feedback. Wrong/missing markers and errors quarantine resources.
+- (nullable NeuralStudioDLSSSRFrameLease*)newManagedFrameLeaseForCommandBuffer:(id<MTL4CommandBuffer>)commandBuffer
+                                                                      allocator:(id<MTL4CommandAllocator>)allocator
+                                                                      queue:(id<MTL4CommandQueue>)queue
+                                                                      reset:(BOOL)reset
+                                                                      error:(NSError**)error;
+- (BOOL)encodeManagedFrameWithLease:(NeuralStudioDLSSSRFrameLease*)lease
+                        colorBuffer:(id<MTLBuffer>)colorBuffer
+                        colorOffset:(NSUInteger)colorOffset
+                       motionBuffer:(id<MTLBuffer>)motionBuffer
+                       motionOffset:(NSUInteger)motionOffset
+                        depthBuffer:(id<MTLBuffer>)depthBuffer
+                        depthOffset:(NSUInteger)depthOffset
+                     exposureBuffer:(id<MTLBuffer>)exposureBuffer
+                     exposureOffset:(NSUInteger)exposureOffset
+                       outputBuffer:(id<MTLBuffer>)outputBuffer
+                       outputOffset:(NSUInteger)outputOffset
+                      jitterOffsetX:(float)jitterOffsetX
+                      jitterOffsetY:(float)jitterOffsetY
+                 motionVectorScaleX:(float)motionVectorScaleX
+                 motionVectorScaleY:(float)motionVectorScaleY
+                      depthReversed:(BOOL)depthReversed
+                              error:(NSError**)error;
+/// Explicit discontinuity after external fallback/gap; releases nothing. Next chain needs reset/drain.
+- (void)invalidateManagedTemporalChain;
+/// Permanently abandon the whole unsubmitted recording before discarding. Submitted/unknown work
+/// cannot be discarded or retried. Abandoning any dependency cuts the temporal chain.
+- (BOOL)discardUnsubmittedManagedFrameLease:(NeuralStudioDLSSSRFrameLease*)lease error:(NSError**)error;
+/// Ends no CBs: caller must end all recordings first. Fresh options are internal and cannot be reused.
+/// Options/handler setup failure remains unsubmitted/discardable. Persists SUBMIT_ISSUED before
+/// calling Metal; authentic late completion may retire SubmitUnknown ownership without reviving
+/// cut content. Supports feedback before return and never retries ambiguous invocation.
+- (BOOL)commitManagedCommandBuffers:(NSArray<id<MTL4CommandBuffer>>*)commandBuffers
+                             queue:(id<MTL4CommandQueue>)queue
+                            leases:(NSArray<NeuralStudioDLSSSRFrameLease*>*)leases
+                          feedback:(nullable MTL4CommitFeedbackHandler)feedback
+                             error:(NSError**)error;
+/// This public source has no trusted full-core numeric/temporal qualification authority yet.
+/// Candidate registration returns unavailable; native stays selected. No model is supplied.
+- (BOOL)configureOptionalNeuralCoreBackend:(id<NeuralStudioDLSSSRNeuralCoreBackend>)backend error:(NSError**)error;
+@property(nonatomic, readonly, copy) NSString* neuralCoreBackendStatus;
 
 /// Frame-ring backpressure counters, for the runtime log: how many frames had to wait for a ring
 /// slot, how many gave up (and fell back), and the deepest in-flight count seen. A non-zero wait
