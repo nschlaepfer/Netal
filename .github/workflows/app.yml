@@ -52,6 +52,10 @@ jobs:
         run: python3 scripts/test-netal-sr-source-assembly.py
       - name: Test experimental iOS SR contracts without models
         run: |
+          sh scripts/test-netal-sr-managed-contract.sh
+          python3 scripts/test-netal-sr-managed-helpers.py
+          python3 scripts/test-netal-sr-managed-buffer-wrapper.py
+          python3 scripts/test-netal-sr-provider-boundary.py
           python3 scripts/test-netal-ios-sr-device-policy.py
           python3 scripts/test-netal-ios-sr-build.py
           python3 scripts/test-netal-ios-sr-probe.py

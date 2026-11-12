@@ -28,6 +28,8 @@ HEADERS = (
     'src/ios_host/netal_ios_sr_capabilities.h',
     'src/macos_host/dlss_sr_session.h',
     'src/macos_host/dlss_sr_texture_adapter.h',
+    'src/macos_host/dlss_sr_frame_ledger.h',
+    'src/macos_host/dlss_sr_neural_backend.h',
 )
 KERNEL_BUILDERS = {
     'reference': 'build-netal-sr-reference-kernels.py',
